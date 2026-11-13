@@ -82,7 +82,7 @@ async def _heartbeat_loop(ctx_: Context) -> None:
             payload = await heartbeat_payload(ctx_.settings.system_name, link,
                                               await ctx_.repo.pending_count())
             await ctx_.publisher.publish("sistema/estado", payload, sync=False)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("heartbeat failed")
         await asyncio.sleep(ctx_.settings.heartbeat_seconds)
 
@@ -96,7 +96,7 @@ async def _link_loop(ctx_: Context) -> None:
             ctx_.link_up = link
             if changed or not link:
                 await _heartbeat_once(ctx_)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("link monitor failed", exc_info=True)
         await asyncio.sleep(2.0)
 
@@ -149,7 +149,7 @@ async def _dispatch_loop(ctx_: Context) -> None:
                 await ctx_.workflow.handle_closure(payload)
             elif topic == "planta/energia":
                 log.info("plant energy state: %s", payload.get("hay_energia"))
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("failed to handle %s", topic)
 
 
@@ -181,7 +181,7 @@ async def lifespan(app: FastAPI):
                               beam_size=settings.asr_beam_size)
     try:
         await asyncio.to_thread(transcriber.warmup)
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("ASR warmup failed; notes will fail until the model is available")
 
     mqtt = MqttTransport(settings.mqtt_host, settings.mqtt_port)
@@ -199,7 +199,7 @@ async def lifespan(app: FastAPI):
     # A restart in the middle of a sustained deviation must keep the same event id.
     try:
         detector.restore(await repo.sensor_episodes())
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.warning("sensor episodes could not be restored", exc_info=True)
     ctx = Context(settings, db, repo, plant, mqtt, publisher, materials, snapshot, transcriber,
                   workflow, detector)
@@ -242,7 +242,7 @@ async def _heartbeat_once(ctx_: Context) -> None:
 async def _heartbeat_loop_once(ctx_: Context) -> None:
     try:
         await _heartbeat_once(ctx_)
-    except Exception:  # noqa: BLE001
+    except Exception:
         log.exception("initial heartbeat failed")
 
 

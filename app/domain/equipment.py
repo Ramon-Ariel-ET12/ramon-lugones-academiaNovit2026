@@ -28,8 +28,7 @@ def preprocess(text: str) -> str:
     # the variable and the equipment can be resolved.
     lowered = re.sub(r"\b([a-z])\.", r"\1", lowered)
     lowered = re.sub(r"\bdel\b", "de el", lowered)
-    lowered = re.sub(r"\bal\b", "a el", lowered)
-    return lowered
+    return re.sub(r"\bal\b", "a el", lowered)
 
 
 def _alias_variants(equipment: Equipment) -> set[str]:
@@ -49,7 +48,7 @@ def _alias_variants(equipment: Equipment) -> set[str]:
             variants.add(f"{word} {letter}")
             variants.add(f"el {word} {letter}")
     # The plant list spells "bomba uno"; operators also say "bomba 1".
-    for name in list(variants):
+    for name in variants:
         parts = name.split()
         if len(parts) == 2 and parts[0] in ("bomba", "la", "el"):
             variants.add(f"{parts[0]} {parts[1]}")

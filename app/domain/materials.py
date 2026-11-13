@@ -48,7 +48,9 @@ class Materials(BaseModel):
 
     def in_stock(self, code: str, quantity: float, warehouse: str = "yacimiento") -> bool:
         part = self.parts.get(code)
-        return bool(part) and part.stock.get(warehouse, 0) >= quantity
+        if part is None:
+            return False
+        return part.stock.get(warehouse, 0) >= quantity
 
 
 def load_materials(path: Path | str) -> Materials:

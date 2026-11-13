@@ -88,7 +88,7 @@ class Transcriber:
             if on_partial is not None:
                 try:
                     on_partial(" ".join(parts))
-                except Exception:  # noqa: BLE001
+                except Exception:
                     log.warning("partial transcript callback failed", exc_info=True)
         text = " ".join(parts).strip()
         latency = int((time.perf_counter() - started) * 1000)

@@ -10,10 +10,12 @@ from __future__ import annotations
 from datetime import datetime
 
 from app.domain.equipment import EquipmentIndex, preprocess
+from app.domain.limits import violation
 from app.domain.models import Ambiguity, ExtractedRow, PartDraft, PlantSnapshot
 from app.domain.numbers import NUMBER_WORDS, parse_numbers, tokenize
 from app.domain.safety import detect_safety
-from app.domain.units import detect_unit, to_kg
+from app.domain.units import detect_unit
+from app.domain.vocabulary import HOT_BEARING_DEGC
 
 BOUNDARY_TOKENS = {".", ";", ",", "!", "?", "¡", "¿", "tambien", "ademas", "despues", "mientras", "pero", "porque"}
 TENS_WORDS = {
@@ -21,10 +23,13 @@ TENS_WORDS = {
 }
 UNIT_WORDS = {"uno", "un", "dos", "tres", "cuatro", "cinco", "seis", "siete", "ocho", "nueve"}
 
-NORMAL_STATES = {"parada, en reserva", "parada por mantenimiento"}
 QUANTITATIVE = {"presion_descarga_local", "presion_diferencial", "temperatura_rodamiento_ir",
                 "goteo_empaquetadura", "nivel"}
 IMPLAUSIBLE_DIFFERENTIAL = 3.0
+# A spoken differential below this is plausible ("cero nueve" = 0.9 kg/cm2).
+PLAUSIBLE_DIFFERENTIAL_MIN = 0.05
+# Above this the ASR has welded a TAG ("B-109") or the operator omitted the comma.
+DIFFERENTIAL_COMMA_THRESHOLD = 10
 
 
 def split_clauses(tokens: list[str]) -> list[list[str]]:
@@ -141,17 +146,12 @@ def _observation(variable: str, text: str, value: float | None, unit: str | None
     if value is None or tag is None:
         return None
     sensor = "presion_descarga" if variable == "presion_descarga_local" else variable
-    limit = snapshot.limit(tag, sensor)
-    if limit is None:
-        if variable == "temperatura_rodamiento_ir" and value > 75:
-            return "rodamiento caliente"
-        return None
-    measured = to_kg(value, unit) if variable.startswith("presion") else value
-    if limit.high is not None and measured >= limit.high:
+    out_of_range = violation(value, unit, snapshot.limit(tag, sensor))
+    if out_of_range == "high":
         return "diferencial alto" if variable == "presion_diferencial" else "presión de descarga alta"
-    if limit.low is not None and measured <= limit.low:
+    if out_of_range == "low":
         return "diferencial bajo" if variable == "presion_diferencial" else "presión de descarga baja"
-    if variable == "temperatura_rodamiento_ir" and value > 75:
+    if variable == "temperatura_rodamiento_ir" and value > HOT_BEARING_DEGC:
         return "rodamiento caliente"
     return None
 
@@ -215,7 +215,8 @@ def _secondary_rows(clause: list[str], mentions, tag: str, masked: list[str],
         value = after[0].value if after else None
         rows.append(ExtractedRow(tag=tag, variable="temperatura_rodamiento_ir", value=value,
                                  unit="degC" if value is not None else None,
-                                 observation="rodamiento caliente" if value is not None and value > 75 else None))
+                                 observation=("rodamiento caliente"
+                                              if value is not None and value > HOT_BEARING_DEGC else None)))
     if "correa" in masked and "estado_correas" not in {row.variable for row in rows}:
         observation = "correas flojas" if "floj" in text else "correas en mal estado"
         rows.append(ExtractedRow(tag=tag, variable="estado_correas", observation=observation))
@@ -228,6 +229,36 @@ def _secondary_rows(clause: list[str], mentions, tag: str, masked: list[str],
     if any(word in masked for word in ("golpeteo", "golpea", "piedras", "ruido")):
         rows.append(ExtractedRow(tag=tag, variable="ruido", observation="ruido anormal"))
     return rows
+
+
+def _plausible_differential(value: float) -> bool:
+    return PLAUSIBLE_DIFFERENTIAL_MIN <= value <= IMPLAUSIBLE_DIFFERENTIAL
+
+
+def _repair_differential(value: float, explicit_decimal: bool, tag: str | None, clause: str,
+                         draft: PartDraft, flags: list[str]) -> float:
+    """Recover a differential the ASR welded together, asking when it stays ambiguous.
+
+    A differential is spoken as "cero nueve" (0.9) or "uno coma cuatro" (1.4), and always
+    stays below a few kg/cm2. Anything larger is either a lost comma ("dieciocho" for
+    1.8) or a TAG glued to the number ("B me dio cero nueve" heard as "B-109").
+    """
+    if value <= IMPLAUSIBLE_DIFFERENTIAL and (explicit_decimal or value < DIFFERENTIAL_COMMA_THRESHOLD):
+        return value
+    if value >= 100:
+        # The last two digits are the spoken decimal: this is not a field ambiguity.
+        alternative = round((value % 100) / 10.0, 4)
+        if _plausible_differential(alternative):
+            flags.append("value_repaired")
+            return alternative
+    repaired = round(value / 10.0, 4)
+    if not _plausible_differential(repaired):
+        return value
+    draft.ambiguities.append(
+        Ambiguity(kind="value", tag=tag, raw_value=value, repaired_value=repaired, clause=clause)
+    )
+    flags.append("value_repaired")
+    return repaired
 
 
 def parse_transcript(
@@ -249,11 +280,11 @@ def parse_transcript(
     safety_code, _evidence = detect_safety(transcript)
     if safety_code:
         mentions = index.find_mentions(tokens)
-        tag = mentions[0].tag if mentions else "PLANTA"
+        alert_tag = mentions[0].tag if mentions else "PLANTA"
         draft.safety = safety_code
         draft.rows = [
             ExtractedRow(
-                tag=tag,
+                tag=alert_tag,
                 variable="condicion_insegura",
                 value=None,
                 unit=None,
@@ -303,29 +334,7 @@ def parse_transcript(
 
         flags: list[str] = []
         if variable == "presion_diferencial" and value is not None:
-            if (value > IMPLAUSIBLE_DIFFERENTIAL) or (value >= 10 and not explicit_decimal):
-                repaired = round(value / 10.0, 4)
-                if value >= 100:
-                    # ASR merged "B me dio cero nueve" into "B-109": the last two
-                    # digits are the spoken decimal. This is not a field ambiguity.
-                    alternative = round((value % 100) / 10.0, 4)
-                    if 0.05 <= alternative <= IMPLAUSIBLE_DIFFERENTIAL:
-                        value = alternative
-                        flags.append("value_repaired")
-                        repaired = None
-                if repaired is not None:
-                    if 0.05 <= repaired <= IMPLAUSIBLE_DIFFERENTIAL:
-                        draft.ambiguities.append(
-                            Ambiguity(
-                                kind="value",
-                                tag=effective_tag,
-                                raw_value=value,
-                                repaired_value=repaired,
-                                clause=clause_text,
-                            )
-                        )
-                        value = repaired
-                        flags.append("value_repaired")
+            value = _repair_differential(value, explicit_decimal, effective_tag, clause_text, draft, flags)
 
         if effective_tag is None:
             if ambiguous and not any(a.kind == "equipment" for a in draft.ambiguities):
@@ -380,9 +389,3 @@ def parse_transcript(
                 break
     return draft
 
-
-def is_normal_observation(variable: str, observation: str | None) -> bool:
-    if variable != "estado":
-        return False
-    normal = " ".join((observation or "").lower().split())
-    return normal in NORMAL_STATES

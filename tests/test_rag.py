@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from app.rag.bm25 import BM25, HybridIndex, metadata_weight
+from app.rag.bm25 import BM25, HybridIndex
+from app.rag.ranking import metadata_weight
 from evaluacion.retrieval_eval import evaluate, load, old_before_new
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -54,7 +55,7 @@ def test_other_model_penalty_does_not_hide_a_section_the_question_names():
 
 
 def test_manufacturer_codes_are_expanded_in_the_lexical_query():
-    from app.rag.bm25 import expand_query
+    from app.rag.ranking import expand_query
 
     assert "F01" in expand_query("¿Qué significa TX-T01?").split()
     assert expand_query("límite de vibración") == "límite de vibración"

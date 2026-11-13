@@ -2,62 +2,12 @@ from __future__ import annotations
 
 from app.config import Settings
 from app.contract import NotaRecorrida
-from app.processing.workflow import NoteWorkflow
+from tests import fakes
 from tests.conftest import TZ
 
 
-class FakeRepo:
-    def __init__(self):
-        self.tablet: list[str] = []
-        self.parts: list[dict] = []
-        self.events: list[dict] = []
-
-    async def get_part(self, note_id):
-        return None
-
-    async def set_note_status(self, *args):
-        return None
-
-    async def set_transcript(self, *args):
-        return None
-
-    async def add_tablet_message(self, message_id, note_id, ts, kind, payload):
-        self.tablet.append(message_id)
-        return True
-
-    async def add_attempt(self, *args):
-        return None
-
-    async def record_usage(self, *args, **kwargs):
-        return None
-
-    async def set_attempt_reply(self, *args):
-        return None
-
-    async def save_part(self, note_id, status, rows, safety, attempts):
-        self.parts.append({"note_id": note_id, "status": status, "rows": rows})
-
-    async def insert_event(self, event, context=None):
-        self.events.append(event)
-        return True
-
-    async def update_event_context(self, event_id, context):
-        return None
-
-
-class FakePublisher:
-    def __init__(self):
-        self.messages: list[tuple[str, dict]] = []
-
-    async def publish(self, topic, payload, sync=True):
-        self.messages.append((topic, payload))
-        return True
-
-
-def make_workflow(text: str, snapshot, materials) -> tuple[NoteWorkflow, FakeRepo, FakePublisher]:
-    repo, publisher = FakeRepo(), FakePublisher()
-    workflow = NoteWorkflow(Settings(), repo=repo, plant=None, publisher=publisher,  # type: ignore[arg-type]
-                            snapshot=snapshot, materials=materials, transcriber=None)
+def make_workflow(text: str, snapshot, materials):
+    workflow, repo, publisher = fakes.make_workflow(snapshot, materials)
 
     async def transcribe(note):
         return text
@@ -101,7 +51,7 @@ async def test_value_question_answer_replaces_the_repaired_value(snapshot, mater
     """The operator says the differential really was eighteen: the stored row must change."""
     from app.domain.models import Ambiguity, ExtractedRow, PartDraft
 
-    wf, repo, publisher = make_workflow("", snapshot, materials)
+    wf, _repo, publisher = make_workflow("", snapshot, materials)
     draft = PartDraft(note_id="N3", ts=__import__("datetime").datetime(2026, 11, 3, 8, 0, tzinfo=TZ),
                       rows=[ExtractedRow(tag="F-201B", variable="presion_diferencial", value=1.8,
                                          unit="kg/cm2", flags=["value_repaired"])])
@@ -137,7 +87,7 @@ async def test_historical_answer_is_applied_and_a_denial_removes_the_row(snapsho
 
 
 async def test_unreadable_audio_is_not_reported_as_no_novedad(snapshot, materials):
-    wf, repo, publisher = make_workflow("", snapshot, materials)
+    wf, repo, _publisher = make_workflow("", snapshot, materials)
 
     async def silent(note):
         return ""
@@ -186,7 +136,7 @@ async def test_token_budget_disables_the_local_llm(snapshot, materials):
                 "model": "fake", "task": "reply", "input_tokens": 100, "output_tokens": 100,
                 "latency_ms": 1, "cost_usd": 0.0}
 
-    wf, repo, _ = make_workflow("", snapshot, materials)
+    wf, _repo, _ = make_workflow("", snapshot, materials)
     wf.llm = FakeLLM()
     wf.settings = Settings(max_attempts=6, max_note_steps=4, token_budget=50)
     draft = PartDraft(note_id="N6", ts=__import__("datetime").datetime(2026, 11, 3, 8, 0, tzinfo=TZ),

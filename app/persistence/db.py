@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from pathlib import Path
+from typing import cast
 
 from psycopg.rows import dict_row
 from psycopg_pool import AsyncConnectionPool
@@ -31,10 +33,8 @@ class Database:
             except Exception as exc:  # noqa: BLE001
                 last = exc
                 if self.pool is not None:
-                    try:
+                    with contextlib.suppress(Exception):
                         await self.pool.close()
-                    except Exception:  # noqa: BLE001
-                        pass
                 log.warning("database not ready (attempt %s): %s", attempt + 1, exc)
                 await asyncio.sleep(delay)
         raise RuntimeError(f"database unavailable: {last}")
@@ -58,10 +58,10 @@ class Database:
 
     async def fetch(self, sql: str, params: tuple | list = ()) -> list[dict]:
         assert self.pool is not None
-        async with self.pool.connection() as conn:
-            async with conn.cursor() as cur:
-                await cur.execute(sql, params)
-                return await cur.fetchall()
+        async with self.pool.connection() as conn, conn.cursor() as cur:
+            await cur.execute(sql, params)
+            # The pool is built with dict_row, so every row is already a mapping.
+            return cast("list[dict]", await cur.fetchall())
 
     async def fetchrow(self, sql: str, params: tuple | list = ()) -> dict | None:
         rows = await self.fetch(sql, params)

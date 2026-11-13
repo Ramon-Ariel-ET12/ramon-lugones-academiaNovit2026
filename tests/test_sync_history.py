@@ -8,28 +8,13 @@ from app.domain.history import HistoricalValidator, outside_range, range_from_va
 from app.domain.models import ExtractedRow
 from app.heartbeat import heartbeat_payload
 from app.integrations.sync import CloudSync
-
-
-class FakeRepo:
-    def __init__(self, items):
-        self.items = items
-        self.acked = []
-        self.bumped = []
-
-    async def pending_sync(self, limit=50):
-        return self.items[:limit]
-
-    async def ack_sync(self, ids):
-        self.acked.extend(ids)
-
-    async def bump_sync(self, ids):
-        self.bumped.extend(ids)
+from tests import fakes
 
 
 @respx.mock
 async def test_sync_acknowledges_on_success():
     respx.post("http://cloud:8300/items").mock(return_value=httpx.Response(200, json={"ok": True}))
-    repo = FakeRepo([{"id": 1, "topic": "sistema/eventos", "payload": {"id": "e"}}])
+    repo = fakes.FakeQueue([{"id": 1, "topic": "sistema/eventos", "payload": {"id": "e"}}])
     sync = CloudSync(repo, "http://cloud:8300", client_factory=lambda: httpx.AsyncClient(trust_env=False))
     assert await sync.once() == 1
     assert repo.acked == [1]
@@ -39,7 +24,7 @@ async def test_sync_acknowledges_on_success():
 @respx.mock
 async def test_sync_keeps_items_on_failure():
     respx.post("http://cloud:8300/items").mock(return_value=httpx.Response(503))
-    repo = FakeRepo([{"id": 2, "topic": "sistema/eventos", "payload": {}}])
+    repo = fakes.FakeQueue([{"id": 2, "topic": "sistema/eventos", "payload": {}}])
     sync = CloudSync(repo, "http://cloud:8300", client_factory=lambda: httpx.AsyncClient(trust_env=False))
     assert await sync.once() == 0
     assert repo.acked == []
@@ -63,13 +48,8 @@ def test_historical_range_and_margin():
     assert narrow is None
 
 
-class FakePlant:
-    async def historian(self, tag, variable, desde=None, hasta=None):
-        return [{"valor": float(value % 100)} for value in range(2000)]
-
-
 async def test_historical_validator_flags_outliers(snapshot, ts):
-    validator = HistoricalValidator(FakePlant(), snapshot)
+    validator = HistoricalValidator(fakes.FakePlant(samples=[float(value % 100) for value in range(2000)]), snapshot)
     flagged = await validator.check([
         ExtractedRow(tag="B-101", variable="presion_descarga_local", value=200.0, unit="kg/cm2"),
         ExtractedRow(tag="B-101", variable="presion_descarga_local", value=50.0, unit="kg/cm2"),

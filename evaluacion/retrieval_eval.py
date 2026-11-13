@@ -8,6 +8,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 from app.rag.bm25 import BM25, HybridIndex
+from app.rag.corpus import load_fragments
 from app.rag.indexer import Embedder
 
 HERE = Path(__file__).resolve().parent
@@ -15,9 +16,7 @@ HERE = Path(__file__).resolve().parent
 
 def load() -> tuple[list[dict], list[dict]]:
     suite = json.loads((HERE / "retrieval.json").read_text(encoding="utf-8"))
-    fragments = [json.loads(line) for line in (HERE / "fragmentos.jsonl").read_text(encoding="utf-8").splitlines()
-                 if line.strip()]
-    return suite, fragments
+    return suite, load_fragments(HERE / "fragmentos.jsonl")
 
 
 def evaluate(buscar: Callable[[str, int], list[str]], suite: list[dict], ks=(1, 3, 5, 10)) -> dict:

@@ -6,14 +6,15 @@ It is started by hand (or by an MCP client) and is not mounted into the main app
 
 from __future__ import annotations
 
-import json
 import logging
+from typing import Any, Literal
 
 from app.config import get_settings
 from app.domain.materials import load_materials
 from app.domain.plant import load_snapshot_file
 from app.integrations.plant_api import PlantClient
 from app.rag.bm25 import HybridIndex
+from app.rag.corpus import bundled_fragments
 from app.tools.contracts import (
     BomQuery,
     EquipmentQuery,
@@ -28,25 +29,23 @@ from app.tools.queries import Tools
 
 log = logging.getLogger(__name__)
 
+_FastMCP: Any = None
 try:
-    from mcp.server.fastmcp import FastMCP
+    from mcp.server.fastmcp import FastMCP as _ImportedFastMCP
+
+    _FastMCP = _ImportedFastMCP
 except Exception:  # noqa: BLE001
-    FastMCP = None  # type: ignore[assignment]
+    log.debug("mcp SDK not installed; the read-only tools are only reachable in-process")
 
 
 _tools: Tools | None = None
 _fragments = None
 
 
-def _search_index():
+def _search_index() -> HybridIndex:
     global _fragments
     if _fragments is None:
-        from pathlib import Path
-
-        settings = get_settings()
-        path = Path(settings.evaluation_dir) / "fragmentos.jsonl"
-        _fragments = HybridIndex([json.loads(line) for line in path.read_text(encoding="utf-8").splitlines()
-                                  if line.strip()])
+        _fragments = HybridIndex(bundled_fragments(get_settings()))
     return _fragments
 
 
@@ -65,17 +64,17 @@ def build_tools() -> Tools:
     return _tools
 
 
-if FastMCP is not None:
-    mcp = FastMCP("pia-3-readonly")
+if _FastMCP is not None:
+    mcp = _FastMCP("pia-3-readonly")
 
     @mcp.tool()
-    async def inventario(almacen: str = "yacimiento") -> dict:
+    async def inventario(almacen: Literal["yacimiento", "central"] = "yacimiento") -> dict:
         """Inventario de repuestos con stock por almacén (solo lectura)."""
         result = await build_tools().inventario(InventoryQuery(almacen=almacen))
         return result.model_dump()
 
     @mcp.tool()
-    async def stock(codigo: str, almacen: str = "yacimiento") -> dict:
+    async def stock(codigo: str, almacen: Literal["yacimiento", "central"] = "yacimiento") -> dict:
         """Stock de un repuesto en un almacén (solo lectura)."""
         result = await build_tools().stock(StockQuery(codigo=codigo, almacen=almacen))
         return result.model_dump()
@@ -120,7 +119,7 @@ if FastMCP is not None:
 
 
 def main() -> None:
-    if FastMCP is None:
+    if _FastMCP is None:
         raise SystemExit("mcp SDK is not installed")
     logging.basicConfig(level=logging.INFO)
     mcp.run(transport="stdio")

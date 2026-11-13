@@ -13,6 +13,7 @@ import argparse
 import json
 from collections import defaultdict
 from datetime import datetime
+from itertools import pairwise
 from pathlib import Path
 
 A_KG = {"kg/cm2": 1.0, "psi": 1 / 14.2233, "bar": 1 / 0.980665}
@@ -204,7 +205,7 @@ def main() -> int:
               if not any(nota["nota_id"] in (a["payload"].get("nota_ids") or []) for nota in inseguras)]
     print(f"  alertas de seguridad falsas: {len(falsas)}")
 
-    huecos = sum(1 for a, b in zip(latidos, latidos[1:], strict=False)
+    huecos = sum(1 for a, b in pairwise(latidos)
                  if (_when(b["ts_real"]) - _when(a["ts_real"])).total_seconds() > 60)
     print(f"\nF2 latidos: {len(latidos)} · huecos > 60 s: {huecos} · "
           f"F1 inválidos: {len(invalidos)}")

@@ -99,7 +99,7 @@ class Repository:
         )
         return row is not None
 
-    async def add_reply(self, reply_id: str, message_id: str, note_id: str, text: str,
+    async def add_reply(self, reply_id: str, message_id: str, note_id: str | None, text: str,
                         ts: datetime | None) -> None:
         await self.db.execute(
             """INSERT INTO replies (id, message_id, note_id, text, ts)

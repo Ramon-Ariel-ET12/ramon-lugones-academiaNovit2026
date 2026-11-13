@@ -2,15 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-import json
 import logging
 import re
-from pathlib import Path
+from typing import Any
 
 from app.config import Settings
 from app.integrations.plant_api import PlantClient
 from app.persistence.repository import Repository
+from app.rag.corpus import bundled_fragments, canonical
 
 log = logging.getLogger(__name__)
 
@@ -29,7 +30,7 @@ def _metadata_by_doc(documents: dict, equipment_makers: dict[str, str] | None = 
     docs: dict[str, dict] = {}
     makers: dict[str, str] = {}
     for item in documents.get("documentos", []):
-        info = {"manufacturer": item.get("emisor") or "", "equipment": item.get("equipos") or []}
+        info: dict = {"manufacturer": item.get("emisor") or "", "equipment": item.get("equipos") or []}
         docs[item["id"]] = info
         for tag in info["equipment"]:
             if tag and info["manufacturer"]:
@@ -43,14 +44,15 @@ def _metadata_by_doc(documents: dict, equipment_makers: dict[str, str] | None = 
 
 
 def _chunk(fragment: dict, meta: dict) -> dict:
-    doc = fragment["doc"]
+    """One corpus fragment -> one indexed chunk, with the metadata the reranker uses."""
+    chunk = canonical(fragment)
+    doc = chunk["doc"]
     info = meta["docs"].get(doc, {})
-    vigente = fragment.get("vigente")
     equipment = [str(tag).upper() for tag in (info.get("equipment") or [])]
     if not equipment:
         # Order histories carry the TAG in their title ("OT-24-0001 B-101 T-B-VAL") but
         # the plant's document metadata has no equipment list for the collection.
-        heading = f"{fragment.get('titulo') or ''} {fragment.get('numero') or ''}"
+        heading = f"{chunk['title']} {chunk['number']}"
         equipment = sorted({match.group(1).upper() for match in meta["tag_re"].finditer(heading)})
     manufacturer = str(info.get("manufacturer") or "")
     if doc == "historial":
@@ -59,34 +61,20 @@ def _chunk(fragment: dict, meta: dict) -> dict:
                              if tag in meta["equipment_makers"]), "")
     elif not manufacturer:
         manufacturer = next((meta["makers"][tag] for tag in equipment if tag in meta["makers"]), "")
-    section = str(fragment.get("clave") or "")
-    if not section and doc == "historial":
-        section = "OT"
+    if not chunk["section_key"] and doc == "historial":
+        chunk["section_key"] = "OT"
     return {
-        "id": fragment["id"],
-        "citation": fragment["id"],
-        "doc": doc,
-        "number": str(fragment.get("numero") or ""),
-        "title": str(fragment.get("titulo") or ""),
-        "section_key": section,
-        "page": fragment.get("pagina"),
-        "current": True if vigente is None else bool(vigente),
+        **chunk,
         "manufacturer": manufacturer,
         "equipment": equipment,
-        "text": fragment["texto"],
-        "content_hash": hashlib.sha1(fragment["texto"].encode("utf-8")).hexdigest()[:16],
+        "content_hash": hashlib.sha1(chunk["text"].encode("utf-8")).hexdigest()[:16],
     }
-
-
-def _bundled_fragments(settings: Settings) -> list[dict]:
-    path = Path(settings.evaluation_dir) / "fragmentos.jsonl"
-    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
 
 
 class Embedder:
     def __init__(self, model_name: str):
         self.model_name = model_name
-        self._model = None
+        self._model: Any = None
 
     def load(self):
         if self._model is None:
@@ -114,7 +102,7 @@ async def ensure_index(repo: Repository, plant: PlantClient, settings: Settings)
                   if item.get("fabricante")}
     except Exception as exc:  # noqa: BLE001
         log.warning("plant corpus unavailable, using bundled snapshot: %s", exc)
-        fragments = _bundled_fragments(settings)
+        fragments = bundled_fragments(settings)
         documents = {"documentos": []}
         makers = {}
     meta = _metadata_by_doc(documents, makers)
@@ -124,8 +112,6 @@ async def ensure_index(repo: Repository, plant: PlantClient, settings: Settings)
         # can derive (equipment/manufacturer for order histories) without re-embedding.
         await repo.rag_refresh_metadata(chunks)
         return count
-    import asyncio
-
     embedder = Embedder(settings.embedding_model)
     texts = [f"{chunk['title']}\n{chunk['text']}" for chunk in chunks]
     embeddings = await asyncio.to_thread(embedder.passages, texts)

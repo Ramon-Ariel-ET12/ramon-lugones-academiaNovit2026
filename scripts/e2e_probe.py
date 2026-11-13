@@ -14,7 +14,7 @@ operator's answers are the production path.
     uv run python scripts/e2e_probe.py --solo-escuchar --segundos 60
 
 ``--reiniciar`` leaves a clean bench first: it empties the assistant tables and moves the
-plant to ``martes-tranquilo`` at ×1. Without it, re-emitting a note reuses the simulator's
+plant to ``martes-tranquilo`` at x1. Without it, re-emitting a note reuses the simulator's
 note id (NOTA-00001, NOTA-00002, …), the assistant correctly deduplicates it and nothing
 is shown on the tablet — the probe now says so instead of looking like a silent failure.
 """
@@ -54,7 +54,7 @@ def reset_bench() -> None:
     estado = httpx.get(f"{PLANT}/api/estado", timeout=10).json()
     if estado.get("pausado"):
         httpx.post(f"{PLANT}/api/control/pausa", timeout=10)
-    print(f"planta en {estado.get('escenario')} ×{estado.get('velocidad')}")
+    print(f"planta en {estado.get('escenario')} x{estado.get('velocidad')}")
 
 
 def app_note_ids() -> set[str]:
@@ -144,7 +144,7 @@ def main() -> int:
     parser.add_argument("--seguridad", default=None, help="S1..S4 si la nota es insegura")
     parser.add_argument("--segundos", type=float, default=45, help="cuánto escuchar después de emitir")
     parser.add_argument("--reiniciar", action="store_true",
-                        help="vaciar el estado del asistente y dejar la planta en martes-tranquilo ×1")
+                        help="vaciar el estado del asistente y dejar la planta en martes-tranquilo x1")
     parser.add_argument("--solo-escuchar", action="store_true")
     args = parser.parse_args()
 

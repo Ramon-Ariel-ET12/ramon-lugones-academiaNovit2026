@@ -33,16 +33,16 @@ except ImportError as exc:  # pragma: no cover - installation problem
         "(see README: PLANTA_CONTRATO_DIR or the documented git source)."
     ) from exc
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
-TOPIC_MODELS: dict[str, type] = {
+TOPIC_MODELS: dict[str, type[BaseModel]] = {
     "sistema/eventos": EventoSistema,
     "sistema/ordenes": OrdenSistema,
     "sistema/estado": EstadoSistema,
     "sistema/tablet": MensajeTablet,
 }
 
-PLANT_MODELS: dict[str, type] = {
+PLANT_MODELS: dict[str, type[BaseModel]] = {
     "planta/recorridas": NotaRecorrida,
     "planta/respuestas": RespuestaOperador,
     "planta/cierres": NotaCierre,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import re
 import time
@@ -66,10 +67,8 @@ class NoteWorkflow:
     async def stop(self) -> None:
         if self._task:
             self._task.cancel()
-            try:
+            with contextlib.suppress(asyncio.CancelledError):
                 await self._task
-            except asyncio.CancelledError:
-                pass
         for task in list(self.background):
             task.cancel()
         if self.background:
@@ -110,7 +109,7 @@ class NoteWorkflow:
             # The attempt that asked for it keeps the answer, even when it arrived after
             # the timeout of the dialog that sent the question.
             await self.repo.set_attempt_reply(message_id, reply.texto)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("reply %s could not be stored", reply.id, exc_info=True)
         self.replies[message_id] = payload
         waiter = self.waiters.get(message_id)
@@ -122,7 +121,7 @@ class NoteWorkflow:
             note = await self.queue.get()
             try:
                 await self._process(note)
-            except Exception:  # noqa: BLE001
+            except Exception:
                 log.exception("note %s failed", note.id)
                 await self.repo.set_note_status(note.id, "failed")
             finally:
@@ -231,19 +230,19 @@ class NoteWorkflow:
 
             result = await asyncio.to_thread(self.transcriber.transcribe, target,
                                              on_partial=on_partial)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("note %s transcription failed", note.id)
             return ""
         log.info("note %s transcribed in %sms: %s", note.id, result.latency_ms, result.text[:160])
         await self._record_step("asr", result.latency_ms, model=result.model)
         return result.text
 
-    async def _record_step(self, task: str, latency_ms: int, model: str = "deterministic",
+    async def _record_step(self, task: str, latency_ms: float, model: str = "deterministic",
                            cost_usd: float = 0.0) -> None:
         """One row per pipeline step: model, tokens, estimated cost and latency."""
         try:
             await self.repo.record_usage(model, task, 0, 0, int(latency_ms), cost_usd)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("usage for step %s could not be stored", task, exc_info=True)
 
     async def _download_photos(self, note: NotaRecorrida, draft: PartDraft) -> None:
@@ -268,7 +267,7 @@ class NoteWorkflow:
     async def _send_tablet(self, message_id: str, note: NotaRecorrida, text: str, *,
                            rows: list[ExtractedRow] | None = None, options: list[str] | None = None,
                            waits: bool = True, kind: str = "draft") -> None:
-        pantalla = None
+        pantalla: dict | None = None
         if options is not None:
             pantalla = {"titulo": "Pregunta", "filas": [], "opciones": options}
         elif rows is not None:
@@ -603,7 +602,7 @@ class NoteWorkflow:
         try:
             evidence = await build_event_context(event, rows, photos, self.plant, self.search, self.snapshot,
                                                  self.materials)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("event context for %s could not be built", event["id"], exc_info=True)
             return
         for key in ("sections", "sensor_trend", "order_history", "available_parts"):
@@ -611,7 +610,7 @@ class NoteWorkflow:
                 context[key] = evidence[key]
         try:
             await self.repo.update_event_context(event["id"], context)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("event context for %s could not be stored", event["id"], exc_info=True)
 
     # ---------------------------------------------------------------- orders

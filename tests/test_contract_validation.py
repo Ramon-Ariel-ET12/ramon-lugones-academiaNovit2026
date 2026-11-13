@@ -8,6 +8,7 @@ from app.domain.events import note_events
 from app.domain.parser import parse_transcript
 from app.publisher import Publisher
 from app.tools.contracts import InventoryItem
+from tests import fakes
 
 
 def test_fila_parte_rejects_hora_and_photos():
@@ -42,24 +43,8 @@ def test_sample_contract_messages_are_valid(snapshot, ts):
                                  "pendientes_sincronizar": 0})
 
 
-class FakeMqtt:
-    def __init__(self):
-        self.sent = []
-
-    def publish(self, topic, payload, qos=1):
-        self.sent.append((topic, payload))
-
-
-class FakeRepo:
-    def __init__(self):
-        self.items = []
-
-    async def enqueue(self, topic, payload):
-        self.items.append((topic, payload))
-
-
 async def test_publisher_refuses_invalid_messages():
-    mqtt, repo = FakeMqtt(), FakeRepo()
+    mqtt, repo = fakes.FakeMqtt(), fakes.FakeQueue()
     publisher = Publisher(mqtt, repo)  # type: ignore[arg-type]
     assert await publisher.publish("sistema/eventos", {"id": "x"}) is False
     assert mqtt.sent == []

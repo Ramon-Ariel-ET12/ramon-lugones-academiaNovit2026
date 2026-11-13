@@ -10,7 +10,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -46,8 +46,8 @@ class LocalLLM:
     def __init__(self, model_id: str, enabled: bool = False):
         self.model_id = model_id
         self.enabled = enabled
-        self._pipeline = None
-        self._tokenizer = None
+        self._pipeline: Any = None
+        self._tokenizer: Any = None
 
     def load(self) -> bool:
         if not self.enabled:
@@ -66,7 +66,7 @@ class LocalLLM:
             self._tokenizer = AutoTokenizer.from_pretrained(self.model_id)
             log.info("local llm %s loaded", self.model_id)
             return True
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.exception("local llm unavailable; deterministic reader remains active")
             self._pipeline = None
             return False

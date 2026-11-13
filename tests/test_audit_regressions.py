@@ -6,99 +6,16 @@ from datetime import datetime
 
 import pytest
 
-from app.config import Settings
 from app.domain.parser import parse_transcript
-from app.processing.workflow import NoteWorkflow
-from app.rag.bm25 import metadata_weight
+from app.rag.ranking import metadata_weight
 from app.tools.contracts import InventoryQuery
 from app.tools.queries import Tools
+from tests import fakes
 from tests.conftest import TZ
 
 
-class FakePlant:
-    """Plant HTTP client double: the state clock and a historian with samples."""
-
-    def __init__(self) -> None:
-        self.historian_calls: list[tuple[str, str]] = []
-
-    async def state(self) -> dict:
-        return {"ts": "2026-11-03T08:00:00-03:00", "bombas": [], "enlace_arriba": True,
-                "hay_energia": True}
-
-    async def historian(self, tag: str, variable: str, desde=None, hasta=None) -> list[dict]:
-        self.historian_calls.append((tag, variable))
-        return [{"ts": "2026-11-03T07:00:00-03:00", "valor": 100.0 + index} for index in range(5)]
-
-
-class FakeRepo:
-    def __init__(self) -> None:
-        self.events: list[tuple[dict, dict | None]] = []
-        self.updated: dict[str, dict] = {}
-        self.parts: list[dict] = []
-        self.replies: list[dict] = []
-        self.attempts: list[dict] = []
-        self.usage: list[dict] = []
-
-    async def set_note_status(self, *args):
-        return None
-
-    async def save_part(self, note_id, status, rows, safety, attempts):
-        self.parts.append({"note_id": note_id, "status": status, "rows": rows, "safety": safety})
-
-    async def insert_event(self, event, context=None):
-        self.events.append((event, context))
-        return True
-
-    async def update_event_context(self, event_id, context):
-        self.updated[event_id] = context
-
-    async def add_tablet_message(self, message_id, note_id, ts, kind, payload):
-        return True
-
-    async def note_ids_for_message(self, message_id):
-        return ["N1"]
-
-    async def add_reply(self, reply_id, message_id, note_id, text, ts):
-        self.replies.append({"id": reply_id, "message_id": message_id, "note_id": note_id,
-                             "text": text, "ts": ts})
-
-    async def add_attempt(self, attempt_id, note_id, message_id, kind, rows):
-        self.attempts.append({"id": attempt_id, "kind": kind, "message_id": message_id})
-
-    async def set_attempt_reply(self, message_id, reply):
-        return None
-
-    async def record_usage(self, model, task, input_tokens, output_tokens, latency_ms, cost_usd=0.0):
-        self.usage.append({"model": model, "task": task, "latency_ms": latency_ms})
-
-    async def open_order(self, equipment, tasks):
-        return None
-
-    async def upsert_order(self, *args):
-        return None
-
-    async def record_decision(self, *args):
-        return None
-
-
-class NoopPublisher:
-    def __init__(self) -> None:
-        self.messages: list[tuple[str, dict]] = []
-
-    async def publish(self, topic, payload, sync=True):
-        self.messages.append((topic, payload))
-        return True
-
-
-def make_workflow(snapshot, materials, plant=None) -> tuple[NoteWorkflow, FakeRepo, NoopPublisher]:
-    repo, publisher = FakeRepo(), NoopPublisher()
-    workflow = NoteWorkflow(Settings(), repo=repo, plant=plant, publisher=publisher,  # type: ignore[arg-type]
-                            snapshot=snapshot, materials=materials, transcriber=None)
-    return workflow, repo, publisher
-
-
 async def test_operator_reply_is_persisted(snapshot, materials):
-    workflow, repo, _ = make_workflow(snapshot, materials)
+    workflow, repo, _ = fakes.make_workflow(snapshot, materials)
     await workflow.on_reply({
         "id": "RESP-1", "ts": datetime(2026, 11, 3, 8, 0, tzinfo=TZ).isoformat(),
         "mensaje_id": "TAB-N1-0", "operador": "x", "texto": "Sí, confirmo.", "audio_url": None,
@@ -109,14 +26,14 @@ async def test_operator_reply_is_persisted(snapshot, materials):
 
 
 async def test_invalid_operator_reply_is_not_stored(snapshot, materials):
-    workflow, repo, _ = make_workflow(snapshot, materials)
+    workflow, repo, _ = fakes.make_workflow(snapshot, materials)
     await workflow.on_reply({"mensaje_id": "TAB-N1-0", "texto": "sin contrato"})
     assert repo.replies == []
 
 
 async def test_escalated_event_carries_photos_and_sensor_trend(snapshot, materials):
-    plant = FakePlant()
-    workflow, repo, _ = make_workflow(snapshot, materials, plant=plant)
+    plant = fakes.FakePlant()
+    workflow, repo, _ = fakes.make_workflow(snapshot, materials, plant=plant)
     draft = parse_transcript("La tres sigue goteando por la empaquetadura, le saqué foto.",
                             snapshot, note_id="N1", ts=datetime(2026, 11, 3, 8, 0, tzinfo=TZ),
                             photos=["/media/fotos/empaquetadura/01.jpg"])
@@ -139,7 +56,7 @@ async def test_tool_calls_are_audited_with_arguments(snapshot, materials):
     async def audit(name, arguments, ok, error, latency_ms):
         calls.append((name, arguments, ok, latency_ms))
 
-    tools = Tools(plant=FakePlant(), materials=materials, snapshot=snapshot,  # type: ignore[arg-type]
+    tools = Tools(plant=fakes.FakePlant(), materials=materials, snapshot=snapshot,  # type: ignore[arg-type]
                   search=None, audit=audit)
     result = await tools.inventario(InventoryQuery(almacen="yacimiento"))
     assert result.repuestos
@@ -153,7 +70,7 @@ async def test_failed_tool_is_audited_and_raises(snapshot, materials):
     async def audit(name, arguments, ok, error, latency_ms):
         calls.append((name, ok, error))
 
-    tools = Tools(plant=FakePlant(), materials=materials, snapshot=snapshot,  # type: ignore[arg-type]
+    tools = Tools(plant=fakes.FakePlant(), materials=materials, snapshot=snapshot,  # type: ignore[arg-type]
                   search=None, audit=audit)
     try:
         await tools.stock(__import__("app.tools.contracts", fromlist=["StockQuery"]).StockQuery(

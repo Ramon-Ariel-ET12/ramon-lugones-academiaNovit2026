@@ -14,7 +14,9 @@ from collections import deque
 from datetime import datetime, timedelta
 
 from app.domain.events import ESCALADO
+from app.domain.limits import HIGH, boundary
 from app.domain.models import PlantSnapshot, SensorLimit
+from app.domain.vocabulary import MONITORED_SENSORS
 
 NAMESPACE = uuid.UUID("a3c1e5f2-8b4d-4e6a-9f70-1c2d3e4f5a6b")
 WINDOW_MINUTES = 5
@@ -59,11 +61,7 @@ class SensorWindow:
         return None
 
     def _outside(self, value: float) -> bool:
-        if self.limit.high is not None and value >= self.limit.high:
-            return True
-        if self.limit.low is not None and value <= self.limit.low:
-            return True
-        return False
+        return boundary(value, self.limit) is not None
 
 
 class SensorDetector:
@@ -72,14 +70,14 @@ class SensorDetector:
         self.windows: dict[tuple[str, str], SensorWindow] = {}
         for key, limit in snapshot.limits.items():
             tag, variable = key.split("|", 1)
-            if variable in ("presion_descarga", "presion_succion", "temperatura_aceite", "vibracion",
-                            "presion_diferencial"):
+            if variable in MONITORED_SENSORS:
                 self.windows[(tag, variable)] = SensorWindow(limit)
 
     def restore(self, episodes: list[dict]) -> None:
         """Seed active episodes read from ``sensor_state`` (survives a restart)."""
         for row in episodes:
-            window = self.windows.get((row.get("tag"), row.get("variable")))
+            key = (str(row.get("tag") or ""), str(row.get("variable") or ""))
+            window = self.windows.get(key)
             if window is None or not row.get("active") or not row.get("event_id"):
                 continue
             window.active = True
@@ -127,9 +125,10 @@ class SensorDetector:
             return None, None
         # An episode restored from the database keeps its id: the anomaly is the same one.
         if window.event_id is None:
+            assert window.since is not None  # set by SensorWindow.add on "start"
             window.event_id = str(uuid.uuid5(NAMESPACE, f"sensor:{tag}:{variable}:{window.since.isoformat()}"))
-        direction = "alta" if window.limit.high is not None and value is not None and value >= window.limit.high else "baja"
-        event = {
+        direction = "alta" if boundary(value, window.limit) == HIGH else "baja"
+        event: dict = {
             "id": window.event_id,
             "ts": ts.isoformat(),
             "tipo": ESCALADO,

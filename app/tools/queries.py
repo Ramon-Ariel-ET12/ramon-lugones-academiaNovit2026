@@ -27,6 +27,7 @@ from app.tools.contracts import (
     ManualSearchQuery,
     OrderHistory,
     OrderHistoryQuery,
+    PartUse,
     SensorHistory,
     SensorHistoryQuery,
     SensorSample,
@@ -72,7 +73,7 @@ def audited(name: str, timeout: float = 5.0, retries: int = 1):
                     if attempt < retries:
                         log.warning("tool=%s args=%s timeout=true retry=%s", name, arguments, attempt + 1)
                         continue
-                except Exception as exc:  # noqa: BLE001
+                except Exception as exc:
                     latency = int((time.perf_counter() - started) * 1000)
                     log.warning("tool=%s args=%s ok=false latency_ms=%s error=%s", name, arguments, latency, exc)
                     await self._audit(name, arguments, False, str(exc), latency)
@@ -91,6 +92,11 @@ def audited(name: str, timeout: float = 5.0, retries: int = 1):
     return decorate
 
 
+def _parts(task) -> list[PartUse]:
+    """The task's spare parts as the strict contract model the tools expose."""
+    return [PartUse(codigo=part["codigo"], cantidad=float(part.get("cantidad", 0))) for part in task.parts]
+
+
 class Tools:
     """Every method is a read.  Writes only exist in the approval rule engine."""
 
@@ -107,7 +113,7 @@ class Tools:
             return
         try:
             await self.audit(name, arguments, ok, error, latency_ms)
-        except Exception:  # noqa: BLE001
+        except Exception:
             log.warning("tool audit hook failed", exc_info=True)
 
     @audited("equipos")
@@ -128,7 +134,7 @@ class Tools:
             raise ToolError(f"no existe el sensor {query.tag}/{query.variable}")
         try:
             samples = await self.plant.historian(query.tag, query.variable, query.desde, query.hasta)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ToolError(f"historiador no disponible: {exc}") from exc
         try:
             muestras = [SensorSample(ts=str(item["ts"]), valor=item.get("valor"))
@@ -141,7 +147,7 @@ class Tools:
     async def historial_ordenes(self, query: OrderHistoryQuery) -> OrderHistory:
         try:
             orders = await self.plant.order_history(query.equipo)
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             raise ToolError(f"historial de órdenes no disponible: {exc}") from exc
         items = []
         try:
@@ -195,10 +201,10 @@ class Tools:
             for task in tasks.values():
                 seen[task.code] = TaskInfo(codigo=task.code, nombre=task.name, equipo=[equipment],
                                            detiene=task.stops, horas=task.hours, ejecutor=task.executor,
-                                           repuestos=task.parts, estandar=True)
+                                           repuestos=_parts(task), estandar=True)
         for code, task in self.materials.nonstandard.items():
             seen[code] = TaskInfo(codigo=code, nombre=task.name, equipo=[], detiene=task.stops,
-                                  horas=task.hours, ejecutor=task.executor, repuestos=task.parts,
+                                  horas=task.hours, ejecutor=task.executor, repuestos=_parts(task),
                                   estandar=False)
         return TaskCatalog(tareas=list(seen.values()))
 

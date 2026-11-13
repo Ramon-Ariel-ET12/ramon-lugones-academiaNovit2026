@@ -46,6 +46,11 @@ jobs:
       - name: ruff
         # Same version as uv.lock: a floating ruff could turn a green repo red overnight.
         run: uvx ruff@0.17.4 check .
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: mypy
+        # Type checking is part of the gate: without it the annotations drift.
+        run: uv run mypy app
       - name: Compose network, label and resource budget
         # Verifies planta-lan, the academia.planta: pc label, the enlace proxy and
         # CPU <= 4 / memory <= 8 GiB across every student-side service.

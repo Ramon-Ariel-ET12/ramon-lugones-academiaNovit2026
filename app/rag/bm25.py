@@ -1,41 +1,35 @@
-"""BM25 baseline (same tokenisation family as the course baseline) and hybrid search."""
+"""BM25 baseline (same tokenisation family as the course baseline) and the offline hybrid index."""
 
 from __future__ import annotations
 
 import math
 import re
-import unicodedata
 from collections import Counter
-from dataclasses import dataclass
+from typing import Protocol
 
-STOPWORDS = set(
-    """a al algo como con cual cuales cuando de del el ella en es esta este esto hay la las le lo los mas me
+from app.domain.numbers import strip_accents
+from app.rag.corpus import canonical
+from app.rag.ranking import CANDIDATES, expand_query, rank
+
+STOPWORDS = frozenset(
+    """
+    a al algo como con cual cuales cuando de del el ella en es esta este esto hay la las le lo los mas me
     mi muy no o otra otras para pero por que se si sin sobre su sus un una uno y ya ante hace hacer tiene son fue ser
-    puede qué cuál cuáles cómo cuánto cuántos dónde""".split()
+    puede qué cuál cuáles cómo cuánto cuántos dónde
+    """.split()  # noqa: SIM905
 )
-OTHER_MODEL_RE = re.compile(
-    r"tx-?250|tx-?500|fc-?24|fc-?96|pia-?1|pia-?2|otros modelos|otra familia",
-    re.IGNORECASE,
-)
-MANUFACTURER_STOPWORDS = {"industrial", "gerencia", "operaciones", "contratos", "yacimiento", "srl", "sa"}
-
-
-def manufacturer_words(text: str) -> set[str]:
-    """Significant words of a manufacturer name ("Trimax Industrial S.A." -> {"trimax"})."""
-    words = re.findall(r"[a-z]{4,}", (text or "").lower())
-    return {word for word in words if word not in MANUFACTURER_STOPWORDS}
 
 
 def tokens(text: str) -> list[str]:
-    text = unicodedata.normalize("NFD", (text or "").lower())
-    text = "".join(char for char in text if unicodedata.category(char) != "Mn")
+    text = strip_accents((text or "").lower())
     return [token[:6] for token in re.findall(r"[a-z0-9]+(?:-[a-z0-9]+)*", text) if token not in STOPWORDS]
 
 
 class BM25:
-    def __init__(self, fragments: list[dict], k1: float = 1.4, b: float = 0.75):
-        self.ids = [fragment["id"] for fragment in fragments]
-        self.docs = [Counter(tokens(f"{fragment.get('titulo', '')} {fragment['texto']}")) for fragment in fragments]
+    def __init__(self, chunks: list[dict], k1: float = 1.4, b: float = 0.75):
+        self.chunks = [canonical(chunk) for chunk in chunks]
+        self.ids = [chunk["citation"] for chunk in self.chunks]
+        self.docs = [Counter(tokens(f"{chunk['title']} {chunk['text']}")) for chunk in self.chunks]
         self.lengths = [sum(doc.values()) for doc in self.docs]
         self.average = sum(self.lengths) / len(self.lengths) if self.lengths else 1.0
         df = Counter(token for doc in self.docs for token in doc)
@@ -69,64 +63,23 @@ def cosine(a: list[float], b: list[float]) -> float:
     return numerator / (na * nb) if na and nb else 0.0
 
 
-def rrf(lists: list[list[str]], k: int = 60, weights: list[float] | None = None) -> dict[str, float]:
-    fused: dict[str, float] = {}
-    for index, ranking in enumerate(lists):
-        weight = weights[index] if weights else 1.0
-        for rank, citation in enumerate(ranking):
-            fused[citation] = fused.get(citation, 0.0) + weight / (k + rank + 1)
-    return fused
+class Embedder(Protocol):
+    """The slice of ``rag.indexer.Embedder`` the index needs (tests inject a stub)."""
+
+    def passages(self, texts: list[str]) -> list[list[float]]: ...
+
+    def query(self, text: str) -> list[float]: ...
 
 
-def metadata_weight(chunk: dict, query: str, equipment_tags: set[str]) -> float:
-    weight = 1.0
-    current = chunk.get("current", chunk.get("vigente", True))
-    if current is False:
-        weight *= 0.6
-    # Only the section title identifies "other models" sections; legitimate sections
-    # often mention TX-250/TX-500 in passing and must not be penalised. The penalty only
-    # applies when the question is not about that other model: an operator asking for
-    # PIA-1 must still get the PIA-1 section.
-    heading = f"{chunk.get('title', '')} {chunk.get('section_key', '')}"
-    if OTHER_MODEL_RE.search(heading) and not OTHER_MODEL_RE.search(query):
-        weight *= 0.55
-    chunk_equipment = {str(tag).lower() for tag in (chunk.get("equipment") or [])}
-    if chunk_equipment & {tag.lower() for tag in equipment_tags}:
-        weight *= 1.2
-    if equipment_tags and not (chunk_equipment & {tag.lower() for tag in equipment_tags}):
-        if chunk.get("doc", "").startswith("historial"):
-            weight *= 0.8
-    # Manufacturer: the document issuer is part of the metadata, so a question that
-    # names a manufacturer prefers that maker's manual and loses weight against another.
-    asked = manufacturer_words(query)
-    maker = manufacturer_words(chunk.get("manufacturer") or chunk.get("emisor") or "")
-    if asked and maker:
-        weight *= 1.15 if (asked & maker) else 0.8
-    return weight
-
-
-def expand_query(query: str) -> str:
-    """Add the plant fault codes a manufacturer code refers to (MBP-4 §6).
-
-    The mapping is lexical, so it is applied to the BM25/tsquery side only: the vector
-    query keeps the operator's words.
-    """
-    from app.rag.codes import translate_codes
-
-    codes = translate_codes(query)
-    return f"{query} {' '.join(sorted(codes))}" if codes else query
-
-
-@dataclass
 class HybridIndex:
-    fragments: list[dict]
-    embedder: object | None = None
-    _bm25: BM25 | None = None
-    _vectors: list[list[float]] | None = None
+    """Offline hybrid retrieval over canonical chunks (BM25 + optional vectors)."""
 
-    def __post_init__(self):
-        self._bm25 = BM25(self.fragments)
-        self.by_id = {fragment["id"]: fragment for fragment in self.fragments}
+    def __init__(self, fragments: list[dict], embedder: Embedder | None = None):
+        self.chunks = [canonical(fragment) for fragment in fragments]
+        self.embedder = embedder
+        self._bm25 = BM25(self.chunks)
+        self.by_citation = {chunk["citation"]: chunk for chunk in self.chunks}
+        self._vectors: list[list[float]] | None = None
 
     def _ensure_vectors(self) -> bool:
         if self._vectors is not None:
@@ -134,7 +87,7 @@ class HybridIndex:
         if self.embedder is None:
             return False
         try:
-            texts = [f"{fragment.get('titulo', '')}\n{fragment['texto']}" for fragment in self.fragments]
+            texts = [f"{chunk['title']}\n{chunk['text']}" for chunk in self.chunks]
             self._vectors = self.embedder.passages(texts)
             return True
         except Exception:  # noqa: BLE001
@@ -142,41 +95,14 @@ class HybridIndex:
             return False
 
     def search(self, query: str, k: int = 10, equipment_tags: set[str] | None = None) -> list[dict]:
-        equipment_tags = equipment_tags or set()
-        lexical = [citation for citation, _ in self._bm25.search(expand_query(query), 30)]
-        rankings = [lexical]
-        if self._ensure_vectors():
+        rankings = [[citation for citation, _ in self._bm25.search(expand_query(query), CANDIDATES)]]
+        if self._ensure_vectors() and self.embedder is not None and self._vectors is not None:
             query_vector = self.embedder.query(query)
-            scored = [(cosine(query_vector, vector), fragment["id"])
-                      for vector, fragment in zip(self._vectors, self.fragments, strict=False)]
+            scored = [(cosine(query_vector, vector), chunk["citation"])
+                      for vector, chunk in zip(self._vectors, self.chunks, strict=False)]
             scored.sort(reverse=True)
-            rankings.append([citation for _, citation in scored[:30]])
-        fused = rrf(rankings, weights=[1.0, 0.1])
-        reranked = []
-        for citation, score in fused.items():
-            fragment = self.by_id[citation]
-            if fragment.get("vigente") is False:
-                # An expired manual never answers: its limits are the trap this corpus
-                # tests. It stays indexed (searchable when someone asks for it by id),
-                # but it does not compete in the operator's ranking.
-                continue
-            chunk = {"title": fragment.get("titulo", ""), "text": fragment["texto"],
-                     "section_key": fragment.get("clave", ""), "doc": fragment.get("doc", ""),
-                     "current": True, "equipment": [],
-                     "manufacturer": fragment.get("fabricante", "")}
-            reranked.append((score * metadata_weight(chunk, query, equipment_tags), citation))
-        reranked.sort(reverse=True)
-        return [
-            {
-                "citation": citation,
-                "score": round(score, 6),
-                "doc": self.by_id[citation].get("doc", ""),
-                "title": self.by_id[citation].get("titulo", ""),
-                "current": self.by_id[citation].get("vigente") is not False,
-                "text": self.by_id[citation]["texto"],
-            }
-            for score, citation in reranked[:k]
-        ]
+            rankings.append([citation for _, citation in scored[:CANDIDATES]])
+        return rank(rankings, self.by_citation, query, equipment_tags or set(), k)
 
     def citations(self, query: str, k: int = 10) -> list[str]:
         return [hit["citation"] for hit in self.search(query, k)]

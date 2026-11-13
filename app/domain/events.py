@@ -5,8 +5,9 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+from app.domain.limits import violation
 from app.domain.models import ExtractedRow, PartDraft, PlantSnapshot
-from app.domain.units import to_kg
+from app.domain.vocabulary import HOT_BEARING_DEGC, NORMAL_STATES, QUALITATIVE_VARIABLES, normalise
 
 NAMESPACE = uuid.UUID("6f0d7f9e-6a8b-4b55-9c0e-2f4d8f0b3a11")
 
@@ -14,52 +15,30 @@ SIN_NOVEDAD = "SinNovedad"
 ESCALADO = "Escalado"
 ALERTA_SEGURIDAD = "AlertaSeguridad"
 
-QUALITATIVE_ANOMALIES = {"goteo_empaquetadura", "estado_correas", "ruido", "nivel_aceite_visor"}
-NORMAL_STATES = {"parada, en reserva", "parada por mantenimiento"}
-
-
-def _normal(text: str | None) -> str:
-    return " ".join((text or "").lower().split())
-
 
 def row_is_anomalous(row: ExtractedRow, snapshot: PlantSnapshot,
                      pump_states: dict[str, str] | None = None) -> bool:
-    if row.variable in QUALITATIVE_ANOMALIES:
+    if row.variable in QUALITATIVE_VARIABLES:
         return True
     if row.variable == "condicion_insegura":
         return True
     if row.variable == "estado":
-        observation = _normal(row.observation)
+        observation = normalise(row.observation)
         if observation in NORMAL_STATES:
             return False
         # A pump the operator reports as stopped is only an anomaly if the plant says it
         # is running. The reserve pump is normally stopped, and the ASR sometimes loses
         # the qualifier ("parada, en reserva" heard as "parada").
-        if observation == "parada" and pump_states and _normal(pump_states.get(row.tag)) == "parada":
-            return False
-        return True
+        return not (observation == "parada" and pump_states
+                    and normalise(pump_states.get(row.tag)) == "parada")
     if row.variable == "nivel":
-        return "rebals" in _normal(row.observation)
+        return "rebals" in normalise(row.observation)
     if row.variable == "temperatura_rodamiento_ir":
-        return row.value is not None and row.value > 75
+        return row.value is not None and row.value > HOT_BEARING_DEGC
     if row.variable == "presion_diferencial" and row.value is not None:
-        limit = snapshot.limit(row.tag, "presion_diferencial")
-        measured = to_kg(row.value, row.unit)
-        return _outside(measured, limit)
+        return violation(row.value, row.unit, snapshot.limit(row.tag, "presion_diferencial")) is not None
     if row.variable == "presion_descarga_local" and row.value is not None:
-        limit = snapshot.limit(row.tag, "presion_descarga")
-        measured = to_kg(row.value, row.unit)
-        return _outside(measured, limit)
-    return False
-
-
-def _outside(value: float, limit) -> bool:
-    if limit is None:
-        return False
-    if limit.high is not None and value >= limit.high:
-        return True
-    if limit.low is not None and value <= limit.low:
-        return True
+        return violation(row.value, row.unit, snapshot.limit(row.tag, "presion_descarga")) is not None
     return False
 
 

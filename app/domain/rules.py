@@ -92,9 +92,10 @@ def evaluate(proposal: Proposal, materials: Materials, state: PlantState, *,
                 reasons.append(f"la tarea {code} la hace {task.executor}")
 
     stops = any((materials.task(code, proposal.equipment) or _EMPTY).stops for code in proposal.tasks)
-    if stops and proposal.equipment.startswith("B-") and state.pumps.get(proposal.equipment) == "marcha":
-        if not any(other != proposal.equipment and status == "parada" for other, status in state.pumps.items()):
-            reasons.append("reduce la inyección: no hay bomba de reserva disponible")
+    if (stops and proposal.equipment.startswith("B-") and state.pumps.get(proposal.equipment) == "marcha"
+            and not any(other != proposal.equipment and status == "parada"
+                        for other, status in state.pumps.items())):
+        reasons.append("reduce la inyección: no hay bomba de reserva disponible")
 
     bom = set(materials.bom.get(proposal.equipment, []))
     for part in proposal.parts:

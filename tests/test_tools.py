@@ -14,20 +14,14 @@ from app.tools.contracts import (
     StockQuery,
 )
 from app.tools.queries import ToolError, Tools
+from tests import fakes
 
-
-class FakePlant:
-    async def historian(self, tag, variable, desde=None, hasta=None):
-        return [{"ts": "2026-11-03T08:00:00-03:00", "valor": 112.0},
-                {"ts": "2026-11-03T08:01:00-03:00", "valor": 113.0}]
-
-    async def order_history(self, equipo=None):
-        return [{"id": "OT-1", "fecha": "2026-10-01", "equipo": "B-101", "tareas": ["T-B-EMP"],
-                 "ejecutor": "propio", "estado": "Cerrada", "descripcion": "cambio empaq", "origen": "archivo"}]
+ORDER = {"id": "OT-1", "fecha": "2026-10-01", "equipo": "B-101", "tareas": ["T-B-EMP"],
+         "ejecutor": "propio", "estado": "Cerrada", "descripcion": "cambio empaq", "origen": "archivo"}
 
 
 def tools_with_fake(snapshot, materials):
-    return Tools(FakePlant(), materials, snapshot)
+    return Tools(fakes.FakePlant(samples=[112.0, 113.0], orders=[ORDER]), materials, snapshot)
 
 
 async def test_sensor_history(snapshot, materials):
@@ -131,7 +125,7 @@ async def test_task_catalog_uses_typed_parts(snapshot, materials):
 async def test_manual_search_tool_returns_citations(snapshot, materials):
     from app.tools.contracts import ManualSearchQuery
 
-    tools = Tools(FakePlant(), materials, snapshot, search=FakeSearch())
+    tools = Tools(fakes.FakePlant(), materials, snapshot, search=FakeSearch())
     result = await tools.buscar_manuales(ManualSearchQuery(consulta="limite de vibracion"))
     assert [hit.cita for hit in result.resultados] == ["TX350-D §3.2"]
     assert result.resultados[0].vigente is True

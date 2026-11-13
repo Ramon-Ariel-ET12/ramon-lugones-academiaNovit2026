@@ -15,6 +15,7 @@ from app.domain.equipment import EquipmentIndex, preprocess
 from app.domain.models import ExtractedRow, PartDraft, PlantSnapshot
 from app.domain.numbers import normalize_text, parse_numbers, tokenize
 from app.domain.units import detect_unit
+from app.domain.vocabulary import values_close
 
 CONFIRMATIONS = ("confirmo", "correcto", "perfecto", "esta bien", "asi es", "de acuerdo", "dale")
 QUESTION_WORDS = ("que bomba", "que filtro", "cual", "cual de")
@@ -209,7 +210,7 @@ def apply_corrections(draft: PartDraft, actions: list[dict], snapshot: PlantSnap
             target_tag = action["to"]
             value = action.get("value")
             for row in rows:
-                if row.tag == action.get("from") and row.value is not None and value is not None and abs(row.value - value) <= max(0.6, abs(value) * 0.02):
+                if row.tag == action.get("from") and values_close(row.value, value):
                     row.tag = target_tag
                     break
             rows = _dedupe(rows)
@@ -228,7 +229,7 @@ def apply_corrections(draft: PartDraft, actions: list[dict], snapshot: PlantSnap
                 row.unit = unit
         elif kind == "set_unknown":
             for row in rows:
-                if row.value is not None and action.get("value") is not None and abs(row.value - action["value"]) <= 1.0:
+                if values_close(row.value, action.get("value"), floor=1.0):
                     if action.get("unit"):
                         row.unit = action["unit"]
                     break
