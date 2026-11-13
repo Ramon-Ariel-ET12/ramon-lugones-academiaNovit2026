@@ -192,3 +192,17 @@ async def test_tool_that_recovers_on_retry_returns_the_value():
 
     assert await Flaky().run(InventoryQuery(almacen="central")) == "ok"
     assert calls["n"] == 2
+
+
+async def test_langchain_wrappers_expose_every_read_only_tool(snapshot, materials):
+    """The LangChain surface is what an agent calls: it must build and answer."""
+    from app.tools.langchain_tools import build_langchain_tools
+
+    tools = build_langchain_tools(tools_with_fake(snapshot, materials))
+    assert {tool.name for tool in tools} == {
+        "equipos", "historial_sensores", "historial_ordenes", "inventario",
+        "stock", "lista_materiales", "catalogo_tareas", "buscar_manuales",
+    }
+    inventory = next(tool for tool in tools if tool.name == "inventario")
+    result = await inventory.ainvoke({"almacen": "yacimiento"})
+    assert "TX-EMP-KIT" in {item["codigo"] for item in result["repuestos"]}

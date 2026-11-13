@@ -5,8 +5,6 @@ from __future__ import annotations
 import logging
 import sys
 
-SENSITIVE = ("password", "token", "secret", "authorization", "api_key")
-
 
 def configure_logging(level: str = "INFO") -> None:
     handler = logging.StreamHandler(sys.stdout)
@@ -20,9 +18,3 @@ def configure_logging(level: str = "INFO") -> None:
     for noisy in ("httpx", "httpcore", "urllib3", "transformers", "faster_whisper"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
-
-def redact(value: str) -> str:
-    lowered = value.lower()
-    if any(marker in lowered for marker in SENSITIVE):
-        return "***"
-    return value

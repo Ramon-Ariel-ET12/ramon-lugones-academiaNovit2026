@@ -7,6 +7,7 @@ can propose rows for unusual phrasing and its output is validated before use.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 
 from app.domain.equipment import EquipmentIndex, preprocess
@@ -188,8 +189,6 @@ def _merge_row(rows: list[ExtractedRow], new_row: ExtractedRow, index: dict[tupl
 
 def _split_tag_like(tokens: list[str], snapshot: PlantSnapshot) -> list[str]:
     """Split ASR tokens such as "b109" into "b" + "109" when they are not real tags."""
-    import re
-
     known = {tag.lower().replace("-", "") for tag in snapshot.equipment}
     output: list[str] = []
     for token in tokens:
@@ -201,8 +200,8 @@ def _split_tag_like(tokens: list[str], snapshot: PlantSnapshot) -> list[str]:
     return output
 
 
-def _secondary_rows(clause: list[str], mentions, tag: str, masked: list[str],
-                    numbers, snapshot: PlantSnapshot) -> list[ExtractedRow]:
+def _secondary_rows(clause: list[str], tag: str, masked: list[str],
+                    numbers) -> list[ExtractedRow]:
     """A clause can carry two variables when ASR drops punctuation.
 
     Example: "la 1 en 112 de descarga el rodamiento medio 59 con la pistola".
@@ -359,7 +358,7 @@ def parse_transcript(
             row.photo = photos[photo_cursor]
             photo_cursor += 1
         last_row = _merge_row(rows, row, row_index)
-        for secondary in _secondary_rows(clause, mentions, effective_tag, masked, numbers, snapshot):
+        for secondary in _secondary_rows(clause, effective_tag, masked, numbers):
             if secondary.variable != variable:
                 _merge_row(rows, secondary, row_index)
 

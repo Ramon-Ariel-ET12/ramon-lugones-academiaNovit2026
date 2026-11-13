@@ -101,20 +101,3 @@ class PartDraft(StrictModel):
     def rows_for(self, tag: str) -> list[ExtractedRow]:
         return [row for row in self.rows if row.tag == tag]
 
-
-class NoteContext(StrictModel):
-    note_id: str
-    ts: datetime
-    operator: str = ""
-    audio_url: str | None = None
-    photos: list[str] = Field(default_factory=list)
-    walk_id: str = ""
-    live: bool = False
-
-
-class ReplyContext(StrictModel):
-    message_id: str
-    note_id: str
-    kind: Literal["question_equipment", "question_value", "draft", "notice"]
-    draft: PartDraft | None = None
-    target_tag: str | None = None

@@ -149,15 +149,16 @@ class Tools:
             orders = await self.plant.order_history(query.equipo)
         except Exception as exc:
             raise ToolError(f"historial de órdenes no disponible: {exc}") from exc
-        items = []
         try:
-            for order in orders[-query.limite:]:
-                items.append(WorkOrder(
+            items = [
+                WorkOrder(
                     id=str(order.get("id", "")), fecha=order.get("fecha"),
                     equipo=order.get("equipo", ""), tareas=list(order.get("tareas") or []),
                     ejecutor=order.get("ejecutor", ""), estado=order.get("estado", ""),
                     descripcion=order.get("descripcion", ""), origen=order.get("origen", ""),
-                ))
+                )
+                for order in orders[-query.limite:]
+            ]
         except (TypeError, ValueError, AttributeError) as exc:
             raise ToolError(f"respuesta inválida del historial de órdenes: {exc}") from exc
         return OrderHistory(ordenes=items)

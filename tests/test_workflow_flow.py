@@ -19,7 +19,7 @@ def make_workflow(text: str, snapshot, materials):
         return []
 
     workflow._transcribe = transcribe  # type: ignore[assignment]
-    workflow._wait_reply = wait_reply  # type: ignore[assignment]
+    workflow.tablet.wait = wait_reply  # type: ignore[assignment]
     workflow.history.check = no_history  # type: ignore[assignment]
     return workflow, repo, publisher
 
@@ -60,7 +60,7 @@ async def test_value_question_answer_replaces_the_repaired_value(snapshot, mater
     async def reply_eighteen(message_id, timeout):
         return {"texto": "Eran dieciocho de diferencial."}
 
-    wf._wait_reply = reply_eighteen  # type: ignore[assignment]
+    wf.tablet.wait = reply_eighteen  # type: ignore[assignment]
     draft.ambiguities = [ambiguity]
     resolved = await wf._resolve_ambiguities(
         __import__("app.contract", fromlist=["NotaRecorrida"]).NotaRecorrida(
@@ -114,7 +114,7 @@ async def test_step_budget_caps_the_review_loop(snapshot, materials):
     async def unreadable(message_id, timeout):
         return {"texto": "Eh?"}
 
-    wf._wait_reply = unreadable  # type: ignore[assignment]
+    wf.tablet.wait = unreadable  # type: ignore[assignment]
     note = NotaRecorrida(id="N5", ts=draft.ts, operador="x", audio_url=None, fotos=[], recorrida_id="R")
     _, confirmed = await wf._review_loop(note, draft, deadline=__import__("time").monotonic() + 60)
     assert confirmed is False
@@ -146,7 +146,7 @@ async def test_token_budget_disables_the_local_llm(snapshot, materials):
     async def odd(message_id, timeout):
         return {"texto": "Mmm no sé."}
 
-    wf._wait_reply = odd  # type: ignore[assignment]
+    wf.tablet.wait = odd  # type: ignore[assignment]
     note = NotaRecorrida(id="N6", ts=draft.ts, operador="x", audio_url=None, fotos=[], recorrida_id="R")
     await wf._review_loop(note, draft, deadline=__import__("time").monotonic() + 60)
     assert calls["n"] == 1, "the LLM must be disabled once the note token budget is spent"
@@ -171,7 +171,7 @@ async def test_correction_that_restates_the_draft_is_resent_and_confirmed(snapsh
     async def wait(message_id, timeout):
         return next(replies)
 
-    wf._wait_reply = wait  # type: ignore[assignment]
+    wf.tablet.wait = wait  # type: ignore[assignment]
     note = NotaRecorrida(id="N7", ts=ts, operador="x", audio_url=None, fotos=[], recorrida_id="R")
     result, confirmed = await wf._review_loop(note, draft, deadline=__import__("time").monotonic() + 60)
     assert confirmed is True

@@ -69,10 +69,6 @@ def _numeric_token(token: str) -> tuple[float, bool] | None:
     return float(token), False
 
 
-def _next_significant(tokens: list[str], i: int) -> tuple[int, str] | tuple[None, None]:
-    return (i, tokens[i]) if i < len(tokens) else (None, None)
-
-
 def _compound_number(tokens: list[str], i: int) -> tuple[float, int, bool] | None:
     """Parse a composed cardinal starting at ``tokens[i]``.
 

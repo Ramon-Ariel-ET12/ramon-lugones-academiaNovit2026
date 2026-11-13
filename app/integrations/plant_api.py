@@ -7,6 +7,7 @@ replica client goes through the link proxy.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 from typing import Any
 
@@ -73,17 +74,9 @@ class PlantClient:
     async def documents(self) -> dict:
         return await self.get_json("/api/documentos")
 
-    async def document(self, doc_id: str) -> dict:
-        return await self.get_json(f"/api/documentos/{doc_id}")
-
     async def fragments(self) -> list[dict]:
-        import json
-
         raw = await self.get_bytes("/documentos/fragmentos.jsonl")
         return [json.loads(line) for line in raw.decode("utf-8").splitlines() if line.strip()]
-
-    async def retrieval_suite(self) -> list[dict]:
-        return await self.get_json("/documentos/evaluacion/retrieval.json")
 
     async def link_state(self) -> bool:
         """Control port of the link simulator; never proxied."""

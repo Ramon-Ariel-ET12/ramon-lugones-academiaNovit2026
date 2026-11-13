@@ -131,8 +131,3 @@ class EquipmentIndex:
         ):
             return self.snapshot.pumps()
         return []
-
-    def tag_from_text(self, text: str) -> str | None:
-        tokens = preprocess(text).split()
-        mentions = self.find_mentions(tokens)
-        return mentions[0].tag if len({m.tag for m in mentions}) == 1 else None

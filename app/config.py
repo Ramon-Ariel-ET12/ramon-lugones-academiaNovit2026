@@ -51,15 +51,6 @@ class Settings(BaseSettings):
     ui_port: int = Field(8200, alias="UI_PORT")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 
-    # The official correction runs one scenario at a time; this lets the operator force
-    # human review for an equipment without inventing detection rules.
-    forced_pending: dict[str, list[str]] = Field(default_factory=dict, alias="FORCED_PENDING")
-
-    @property
-    def proxy(self) -> str:
-        import os
-
-        return os.environ.get("HTTPS_PROXY") or os.environ.get("HTTP_PROXY") or ""
 
 
 def get_settings() -> Settings:

@@ -91,7 +91,8 @@ def evaluate(proposal: Proposal, materials: Materials, state: PlantState, *,
             if task.executor != "propio":
                 reasons.append(f"la tarea {code} la hace {task.executor}")
 
-    stops = any((materials.task(code, proposal.equipment) or _EMPTY).stops for code in proposal.tasks)
+    tasks = [materials.task(code, proposal.equipment) for code in proposal.tasks]
+    stops = any(task.stops for task in tasks if task is not None)
     if (stops and proposal.equipment.startswith("B-") and state.pumps.get(proposal.equipment) == "marcha"
             and not any(other != proposal.equipment and status == "parada"
                         for other, status in state.pumps.items())):
@@ -118,10 +119,3 @@ def evaluate(proposal: Proposal, materials: Materials, state: PlantState, *,
         reasons.append("revisión humana obligatoria en este escenario")
 
     return Decision(approved=not reasons, reasons=reasons)
-
-
-class _Empty:
-    stops = False
-
-
-_EMPTY = _Empty()

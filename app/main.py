@@ -4,19 +4,19 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import html
-import json
 import logging
+import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from typing import Annotated
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
 from app.config import Settings, get_settings
 from app.domain.materials import load_materials
-from app.domain.plant import load_snapshot_file
+from app.domain.plant import load_snapshot_file, snapshot_from_definition
 from app.domain.sensors import SensorDetector
 from app.heartbeat import heartbeat_payload
 from app.integrations.mqtt import MqttTransport
@@ -29,6 +29,7 @@ from app.persistence.repository import Repository
 from app.processing.asr import Transcriber
 from app.processing.workflow import NoteWorkflow
 from app.publisher import Publisher
+from app.ui.console import STARTING, render_console
 
 log = logging.getLogger(__name__)
 
@@ -52,13 +53,16 @@ class Context:
     digests: dict[tuple[str, str], datetime] = field(default_factory=dict)
 
 
-ctx: Context | None = None
+def _context(request: Request) -> Context | None:
+    """The running application context (None before startup and after shutdown)."""
+    return getattr(request.app.state, "ctx", None)
+
+
+ContextDep = Annotated[Context | None, Depends(_context)]
 
 
 async def _load_snapshot(plant: PlantClient, settings: Settings):
     try:
-        from app.domain.plant import snapshot_from_definition
-
         return snapshot_from_definition(await plant.definition())
     except Exception as exc:  # noqa: BLE001
         log.warning("using bundled plant definition: %s", exc)
@@ -74,31 +78,30 @@ async def _resume_orders(ctx_: Context) -> None:
         log.info("resumed order %s in state %s", order["id"], payload.get("estado"))
 
 
-async def _heartbeat_loop(ctx_: Context) -> None:
-    while True:
-        try:
-            link = await ctx_.plant.link_state()
-            ctx_.link_up = link
-            payload = await heartbeat_payload(ctx_.settings.system_name, link,
-                                              await ctx_.repo.pending_count())
-            await ctx_.publisher.publish("sistema/estado", payload, sync=False)
-        except Exception:
-            log.exception("heartbeat failed")
-        await asyncio.sleep(ctx_.settings.heartbeat_seconds)
+async def _publish_heartbeat(ctx_: Context) -> None:
+    payload = heartbeat_payload(ctx_.settings.system_name, ctx_.link_up,
+                                await ctx_.repo.pending_count())
+    await ctx_.publisher.publish("sistema/estado", payload, sync=False)
 
 
-async def _link_loop(ctx_: Context) -> None:
-    """Publish a degraded heartbeat as soon as the link is down, and while it stays down."""
+async def _monitor_loop(ctx_: Context) -> None:
+    """Publish the heartbeat, and a degraded one as soon as the link drops.
+
+    The link is polled more often than the heartbeat is published: it can fall between
+    two heartbeats and the plant watches for the exact moment it does.
+    """
+    next_beat = time.monotonic() + ctx_.settings.heartbeat_seconds
     while True:
         try:
             link = await ctx_.plant.link_state()
             changed = link != ctx_.link_up
             ctx_.link_up = link
-            if changed or not link:
-                await _heartbeat_once(ctx_)
+            if changed or not link or time.monotonic() >= next_beat:
+                await _publish_heartbeat(ctx_)
+                next_beat = time.monotonic() + ctx_.settings.heartbeat_seconds
         except Exception:
-            log.warning("link monitor failed", exc_info=True)
-        await asyncio.sleep(2.0)
+            log.warning("heartbeat failed", exc_info=True)
+        await asyncio.sleep(ctx_.settings.link_poll_seconds)
 
 
 async def _sync_loop(ctx_: Context) -> None:
@@ -168,7 +171,6 @@ async def _rag_loop(ctx_: Context) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global ctx
     settings = get_settings()
     configure_logging(settings.log_level)
     db = Database(settings.database_url)
@@ -203,20 +205,24 @@ async def lifespan(app: FastAPI):
         log.warning("sensor episodes could not be restored", exc_info=True)
     ctx = Context(settings, db, repo, plant, mqtt, publisher, materials, snapshot, transcriber,
                   workflow, detector)
-    publisher.pending_hook = lambda: _heartbeat_once(ctx)
+    app.state.ctx = ctx
+    publisher.pending_hook = lambda: _publish_heartbeat(ctx)
     await workflow.start()
     await _resume_orders(ctx)
     ctx.tasks = [
         asyncio.create_task(_dispatch_loop(ctx), name="mqtt-dispatch"),
-        asyncio.create_task(_heartbeat_loop(ctx), name="heartbeat"),
-        asyncio.create_task(_link_loop(ctx), name="link"),
+        asyncio.create_task(_monitor_loop(ctx), name="heartbeat"),
         asyncio.create_task(_sync_loop(ctx), name="sync"),
     ]
     ctx.ready = True
-    # The correction waits for this first heartbeat before releasing the plant clock.
-    await _heartbeat_loop_once(ctx)
+    # The correction waits for this first heartbeat before releasing the plant clock, so
+    # it carries the link state as it is at startup, not the optimistic default.
+    try:
+        ctx.link_up = await plant.link_state()
+        await _publish_heartbeat(ctx)
+    except Exception:
+        log.exception("initial heartbeat failed")
     ctx.tasks.append(asyncio.create_task(_rag_loop(ctx), name="rag"))
-    app.state.ctx = ctx
     log.info("system ready as %s", settings.system_name)
     try:
         yield
@@ -229,89 +235,34 @@ async def lifespan(app: FastAPI):
         await workflow.stop()
         mqtt.stop()
         await db.close()
-        ctx = None
-
-
-async def _heartbeat_once(ctx_: Context) -> None:
-    ctx_.link_up = await ctx_.plant.link_state()
-    payload = await heartbeat_payload(ctx_.settings.system_name, ctx_.link_up,
-                                      await ctx_.repo.pending_count())
-    await ctx_.publisher.publish("sistema/estado", payload, sync=False)
-
-
-async def _heartbeat_loop_once(ctx_: Context) -> None:
-    try:
-        await _heartbeat_once(ctx_)
-    except Exception:
-        log.exception("initial heartbeat failed")
+        del app.state.ctx
 
 
 app = FastAPI(title="PIA-3 assistant", lifespan=lifespan)
 
 
-def _esc(value) -> str:
-    return html.escape("" if value is None else str(value))
-
-
-def _sources(context) -> str:
-    """The manual section each conclusion is based on, rendered next to the event."""
-    if isinstance(context, str):
-        try:
-            context = json.loads(context)
-        except ValueError:
-            return ""
-    sections = (context or {}).get("sections") or []
-    citations = [str(item.get("citation")) for item in sections if item.get("citation")]
-    if not citations:
-        return ""
-    return f" <small>· fuentes: {html.escape(', '.join(citations))}</small>"
-
-
 @app.get("/health")
-async def health():
-    if ctx is None:
+async def health(runtime: ContextDep):
+    if runtime is None:
         return JSONResponse({"ready": False}, status_code=503)
-    return {"ready": ctx.ready, "database": await ctx.db.health(), "link_up": ctx.link_up,
-            "system": ctx.settings.system_name}
+    return {"ready": runtime.ready, "database": await runtime.db.health(), "link_up": runtime.link_up,
+            "system": runtime.settings.system_name}
 
 
 @app.get("/api/state")
-async def state():
-    if ctx is None:
+async def state(runtime: ContextDep):
+    if runtime is None:
         return JSONResponse({"ready": False}, status_code=503)
-    return await ctx.repo.console_state()
+    return await runtime.repo.console_state()
 
 
 @app.get("/", response_class=HTMLResponse)
-async def index():
-    if ctx is None:
-        return HTMLResponse("<h1>PIA-3 assistant</h1><p>starting...</p>")
-    data = await ctx.repo.console_state()
-    rows = []
-    for note in data["notes"]:
-        rows.append(f"<tr><td>{_esc(note['id'])}</td><td>{_esc(note['ts'])}</td>"
-                    f"<td>{_esc(note['status'])}</td><td>{_esc((note['transcript'] or '')[:120])}</td></tr>")
-    events = [f"<li><b>{_esc(e['type'])}</b> {_esc(e['equipment'])} ({_esc(e['origin'])}) - {_esc(e['summary'])}"
-              f"{_sources(e.get('context'))}</li>"
-              for e in data["events"]]
-    orders = [f"<li><b>{_esc(o['state'])}</b> {_esc(o['equipment'])} {_esc(o['tasks'])} "
-              f"<small>{_esc((o['payload'] or {}).get('motivo') or '')}</small></li>" for o in data["orders"]]
-    usage = data["usage"]
-    body = f"""<!doctype html><html lang="es"><head><meta charset="utf-8">
-<title>PIA-3 · Central de mantenimiento</title>
-<style>body{{font-family:system-ui;margin:2rem;color:#1b1b1b}}table{{border-collapse:collapse}}
-td,th{{border-bottom:1px solid #ddd;padding:.35rem .6rem;text-align:left;vertical-align:top}}
-.badge{{background:#0a7;color:#fff;padding:.1rem .5rem;border-radius:6px}}</style></head><body>
-<h1>PIA-3 · Central de mantenimiento</h1>
-<p><span class="badge">{_esc(ctx.settings.system_name)}</span>
-enlace {'arriba' if ctx.link_up else 'caído'} · pendientes de sincronizar: {data['pending_sync']} ·
-fragmentos RAG: {data['rag_chunks']}</p>
-<p>LLM: {usage['calls']} llamadas · tokens entrada {usage['input']} · salida {usage['output']} · latencia {usage['latency']} ms</p>
-<h2>Partes recientes</h2><table><tr><th>Nota</th><th>Hora</th><th>Estado</th><th>Transcripción</th></tr>{''.join(rows)}</table>
-<h2>Eventos</h2><ul>{''.join(events)}</ul>
-<h2>Órdenes</h2><ul>{''.join(orders)}</ul>
-<p><a href="/api/state">JSON</a> · <a href="/health">salud</a></p></body></html>"""
-    return HTMLResponse(body)
+async def index(runtime: ContextDep):
+    if runtime is None:
+        return HTMLResponse(STARTING)
+    data = await runtime.repo.console_state()
+    return HTMLResponse(render_console(data, system_name=runtime.settings.system_name,
+                                       link_up=runtime.link_up))
 
 
 def main() -> None:

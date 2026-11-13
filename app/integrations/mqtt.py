@@ -6,7 +6,6 @@ import asyncio
 import json
 import logging
 from collections.abc import AsyncIterator
-from datetime import datetime
 
 import paho.mqtt.client as mqtt
 
@@ -24,7 +23,6 @@ class MqttTransport:
         self.client.on_connect = self._on_connect
         self.client.on_message = self._on_message
         self.client.reconnect_delay_set(1, 15)
-        self.last_sent = 0.0
 
     def start(self) -> None:
         self.loop = asyncio.get_running_loop()
@@ -48,7 +46,6 @@ class MqttTransport:
 
     def publish(self, topic: str, payload: dict, qos: int = 1) -> None:
         self.client.publish(topic, json.dumps(payload, ensure_ascii=False), qos=qos)
-        self.last_sent = datetime.now().timestamp()
 
     async def messages(self) -> AsyncIterator[tuple[str, dict]]:
         while True:

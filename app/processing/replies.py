@@ -133,7 +133,7 @@ def _correction_actions(text: str, index: EquipmentIndex) -> list[dict]:
     return actions
 
 
-def _infer_variable(tag: str, unit: str | None, snapshot: PlantSnapshot) -> str:
+def _infer_variable(tag: str, unit: str | None) -> str:
     is_filter = tag.startswith("F-")
     if is_filter:
         return "presion_diferencial" if unit in (None, "kg/cm2", "psi", "bar") else "observacion"
@@ -155,7 +155,7 @@ def _set_target(rows: list[ExtractedRow], tag: str, unit: str | None, wrong: flo
     different row of the same equipment, and it also reaches a row whose value is
     ``null`` because the ASR lost the reading.
     """
-    said = _infer_variable(tag, unit, snapshot) if unit else None
+    said = _infer_variable(tag, unit) if unit else None
     if said and said != "observacion":
         for row in rows:
             if row.tag == tag and row.variable == said:
@@ -186,7 +186,7 @@ def apply_corrections(draft: PartDraft, actions: list[dict], snapshot: PlantSnap
         if kind == "remove" and tag:
             rows = [row for row in rows if row.tag != tag]
         elif kind == "add" and tag:
-            variable = _infer_variable(tag, action.get("unit"), snapshot)
+            variable = _infer_variable(tag, action.get("unit"))
             value = action.get("value")
             unit = action.get("unit")
             existing = next((row for row in rows if row.tag == tag and row.variable == variable), None)

@@ -93,6 +93,3 @@ def load_materials(path: Path | str) -> Materials:
     return Materials(parts=parts, bom={k: list(v) for k, v in (data.get("lista_materiales") or {}).items()},
                      standard=standard, nonstandard=nonstandard)
 
-
-def standard_codes_for(materials: Materials, equipment: str) -> set[str]:
-    return set(materials.standard.get(equipment, {}))

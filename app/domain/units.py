@@ -57,7 +57,3 @@ def to_kg(value: float, unit: str | None) -> float:
         return value
     return value * factor
 
-
-def canonical_pressure_unit(unit: str | None) -> str:
-    unit = unit or "kg/cm2"
-    return unit if unit in PRESSURE_UNITS else "kg/cm2"

@@ -40,8 +40,17 @@ class Database:
         raise RuntimeError(f"database unavailable: {last}")
 
     async def migrate(self) -> None:
+        """Apply ``schema.sql`` statement by statement, idempotently.
+
+        The script is split on ``;``, so it must stay a plain list of DDL statements: a
+        dollar-quoted body (``$$ ... ; ... $$``) would be cut in half. The guard makes
+        that a loud failure instead of a half-applied schema.
+        """
         assert self.pool is not None
         script = SCHEMA.read_text(encoding="utf-8")
+        if "$$" in script:
+            raise RuntimeError("schema.sql must not contain dollar-quoted bodies: "
+                               "the migration splits it on ';'")
         statements = [part.strip() for part in script.split(";") if part.strip()]
         async with self.pool.connection() as conn:
             for statement in statements:

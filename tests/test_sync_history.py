@@ -31,8 +31,8 @@ async def test_sync_keeps_items_on_failure():
     assert repo.bumped == [2]
 
 
-async def test_heartbeat_payload_validates():
-    payload = await heartbeat_payload("Test", False, 4)
+def test_heartbeat_payload_validates():
+    payload = heartbeat_payload("Test", False, 4)
     model = EstadoSistema.model_validate(payload)
     assert model.enlace_ok is False
     assert model.pendientes_sincronizar == 4

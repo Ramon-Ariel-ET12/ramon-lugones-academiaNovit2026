@@ -6,13 +6,14 @@ import asyncio
 import contextlib
 import logging
 import re
+import tempfile
 import time
 from datetime import UTC, datetime
 from pathlib import Path
 
 from app.agent import NoteAgent
 from app.config import Settings
-from app.contract import NotaCierre, NotaRecorrida, RespuestaOperador
+from app.contract import NotaCierre, NotaRecorrida
 from app.domain.events import ESCALADO, note_events
 from app.domain.history import HistoricalValidator
 from app.domain.materials import Materials
@@ -26,6 +27,7 @@ from app.llm.local import LocalLLM
 from app.persistence.repository import Repository
 from app.processing.asr import Transcriber
 from app.processing.replies import apply_corrections, is_correction, read_reply
+from app.processing.tablet import TabletChannel
 from app.publisher import Publisher
 from app.rag.context import build_event_context
 
@@ -47,9 +49,8 @@ class NoteWorkflow:
         self.search = search
         self.agent = NoteAgent(snapshot)
         self.history = HistoricalValidator(plant, snapshot)
+        self.tablet = TabletChannel(repo, publisher)
         self.queue: asyncio.Queue[NotaRecorrida] = asyncio.Queue()
-        self.waiters: dict[str, asyncio.Event] = {}
-        self.replies: dict[str, dict] = {}
         self.structural_damage: set[str] = set()
         self.background: set[asyncio.Task] = set()
         self.alerted: dict[str, dict] = {}
@@ -94,27 +95,7 @@ class NoteWorkflow:
 
     async def on_reply(self, payload: dict) -> None:
         """Persist the operator answer and wake the dialog waiting for it."""
-        message_id = payload.get("mensaje_id")
-        if not message_id:
-            return
-        try:
-            reply = RespuestaOperador.model_validate(payload)
-        except Exception as exc:  # noqa: BLE001
-            log.warning("invalid operator reply on %s: %s", message_id, exc)
-            return
-        try:
-            notes = await self.repo.note_ids_for_message(message_id)
-            await self.repo.add_reply(reply.id, message_id, notes[0] if notes else None,
-                                      reply.texto, reply.ts)
-            # The attempt that asked for it keeps the answer, even when it arrived after
-            # the timeout of the dialog that sent the question.
-            await self.repo.set_attempt_reply(message_id, reply.texto)
-        except Exception:
-            log.warning("reply %s could not be stored", reply.id, exc_info=True)
-        self.replies[message_id] = payload
-        waiter = self.waiters.get(message_id)
-        if waiter:
-            waiter.set()
+        await self.tablet.deliver(payload)
 
     async def _worker(self) -> None:
         while True:
@@ -142,8 +123,8 @@ class NoteWorkflow:
         # Keep the plant's event clock slow while the local ASR works, and give the
         # operator immediate feedback. It is a notice, not a question or a draft.
         if not note.id.startswith("VIVO-"):
-            await self._send_tablet(f"TAB-{note.id}-processing", note,
-                                    "Nota recibida. Procesando el parte...", waits=False, kind="notice")
+            await self.tablet.send(note, f"TAB-{note.id}-processing",
+                                   "Nota recibida. Procesando el parte...", waits=False, kind="notice")
 
         transcript = await self._within(note, "transcription", self._transcribe(note), deadline,
                                         fallback="")
@@ -155,7 +136,7 @@ class NoteWorkflow:
             await self._handle_unreadable(note)
             return
         started = time.monotonic()
-        draft, _safety = self.agent.analyze(transcript, note.id, note.ts, note.fotos)
+        draft = self.agent.analyze(transcript, note.id, note.ts, note.fotos)
         await self._record_step("parse", (time.monotonic() - started) * 1000)
 
         if draft.safety:
@@ -208,8 +189,6 @@ class NoteWorkflow:
             log.error("note %s audio download failed: %s", note.id, exc)
             return ""
         suffix = Path(note.audio_url).suffix or ".wav"
-        import tempfile
-
         target = Path(tempfile.gettempdir()) / "pia-audio" / f"{note.id}{suffix}"
         try:
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -264,51 +243,34 @@ class NoteWorkflow:
 
     # ---------------------------------------------------------------- tablet
 
-    async def _send_tablet(self, message_id: str, note: NotaRecorrida, text: str, *,
-                           rows: list[ExtractedRow] | None = None, options: list[str] | None = None,
-                           waits: bool = True, kind: str = "draft") -> None:
-        pantalla: dict | None = None
-        if options is not None:
-            pantalla = {"titulo": "Pregunta", "filas": [], "opciones": options}
-        elif rows is not None:
-            pantalla = {"titulo": "Parte de recorrida - borrador", "filas": [row.to_contract() for row in rows]}
-        payload = {
-            "id": message_id,
-            "ts": datetime.now(UTC).isoformat(),
-            "nota_ids": [note.id],
-            "texto": text,
-            "pantalla": pantalla,
-            "espera_respuesta": waits,
-            "audio_url": None,
-        }
-        await self.repo.add_tablet_message(message_id, note.id, note.ts, kind, payload)
-        await self.publisher.publish("sistema/tablet", payload, sync=False)
+    async def _ask(self, note: NotaRecorrida, message_id: str, text: str, deadline: float, *,
+                   kind: str, timeout: float, options: list[str] | None = None,
+                   rows: list[ExtractedRow] | None = None) -> dict | None:
+        """Ask the operator on the tablet, record the attempt and wait for the answer.
 
-    async def _wait_reply(self, message_id: str, timeout: float) -> dict | None:
-        if message_id in self.replies:
-            return self.replies.pop(message_id)
-        event = self.waiters.setdefault(message_id, asyncio.Event())
-        try:
-            await asyncio.wait_for(event.wait(), timeout)
-        except TimeoutError:
-            return None
-        finally:
-            self.waiters.pop(message_id, None)
-        return self.replies.pop(message_id, None)
+        Every dialog uses this path: the attempt row and the reply are stored together
+        with the question, and the wait never outlives the note's real-time budget.
+        """
+        await self.tablet.send(note, message_id, text, rows=rows, options=options, waits=True, kind=kind)
+        await self.repo.add_attempt(f"attempt-{message_id}", note.id, message_id, kind,
+                                    [row.model_dump() for row in rows] if rows else [])
+        remaining = max(4.0, deadline - time.monotonic())
+        reply = await self.tablet.wait(message_id, min(timeout, remaining))
+        if reply:
+            await self.repo.set_attempt_reply(message_id, reply.get("texto", ""))
+        return reply
 
-    async def _send_draft(self, message_id: str, note: NotaRecorrida, draft: PartDraft,
-                          attempt: int) -> None:
+    async def _send_draft(self, note: NotaRecorrida, message_id: str, draft: PartDraft,
+                          deadline: float) -> dict | None:
         count = len(draft.valued_rows())
         text = f"Borrador del parte de recorrida: {count} lectura(s). Revisá y confirmá."
-        await self._send_tablet(message_id, note, text, rows=draft.rows, waits=True, kind="draft")
-        await self.repo.add_attempt(f"attempt-{message_id}", note.id, message_id, "draft",
-                                    [row.model_dump() for row in draft.rows])
+        return await self._ask(note, message_id, text, deadline, kind="draft", timeout=40.0, rows=draft.rows)
 
     async def _inform_only(self, note: NotaRecorrida, draft: PartDraft) -> None:
         mid = f"TAB-{note.id}-info"
         text = "Parte de recorrida sin lecturas numéricas. Observaciones registradas."
-        await self._send_tablet(mid, note, text, rows=draft.rows, waits=True, kind="draft")
-        await self._wait_reply(mid, 20)
+        await self.tablet.send(note, mid, text, rows=draft.rows, waits=True, kind="draft")
+        await self.tablet.wait(mid, 20)
         await self._send_ack(note)
 
     async def _review_loop(self, note: NotaRecorrida, draft: PartDraft,
@@ -322,14 +284,11 @@ class NoteWorkflow:
         no_effect = 0
         while attempt < max_attempts and time.monotonic() < deadline:
             mid = f"TAB-{note.id}-{attempt}"
-            await self._send_draft(mid, note, draft, attempt)
-            remaining = deadline - time.monotonic()
-            reply = await self._wait_reply(mid, min(40.0, max(4.0, remaining)))
+            reply = await self._send_draft(note, mid, draft, deadline)
             if not reply:
                 log.warning("note %s: no reply to draft %s", note.id, mid)
                 break
             reading = read_reply(reply.get("texto", ""), self.snapshot, "draft")
-            await self.repo.set_attempt_reply(mid, reply.get("texto", ""))
             if reading.kind == "unknown" and self.llm is not None and self.llm.enabled:
                 if tokens_spent >= self.settings.token_budget:
                     log.warning("note %s: token budget (%s) exhausted, LLM disabled for this note",
@@ -372,7 +331,7 @@ class NoteWorkflow:
         return draft, confirmed
 
     async def _send_ack(self, note: NotaRecorrida) -> None:
-        await self._send_tablet(f"TAB-{note.id}-ok", note, "Parte guardado.", waits=False, kind="notice")
+        await self.tablet.send(note, f"TAB-{note.id}-ok", "Parte guardado.", waits=False, kind="notice")
 
     # ---------------------------------------------------------------- ambiguity
 
@@ -382,13 +341,10 @@ class NoteWorkflow:
         for index, ambiguity in enumerate(equipment):
             options = [f"{self._label(tag)} ({tag})" for tag in ambiguity.candidates]
             mid = f"TAB-{note.id}-eq{index}"
-            await self._send_tablet(mid, note, "¿De qué equipo se trata?", options=options,
-                                    waits=True, kind="question_equipment")
-            await self.repo.add_attempt(f"attempt-{mid}", note.id, mid, "question_equipment", [])
-            reply = await self._wait_reply(mid, min(40.0, max(4.0, deadline - time.monotonic())))
+            reply = await self._ask(note, mid, "¿De qué equipo se trata?", deadline,
+                                    kind="question_equipment", timeout=40.0, options=options)
             if not reply:
                 continue
-            await self.repo.set_attempt_reply(mid, reply.get("texto", ""))
             tag = read_reply(reply.get("texto", ""), self.snapshot, "question_equipment").tag
             if tag and tag in ambiguity.candidates:
                 draft = self._apply_equipment_resolution(draft, ambiguity, tag)
@@ -399,11 +355,9 @@ class NoteWorkflow:
             options = ["uno coma ocho", "dieciocho"]
             if ambiguity.repaired_value is not None and ambiguity.raw_value is not None:
                 options = [f"{ambiguity.repaired_value:g}", f"{ambiguity.raw_value:g}"]
-            await self._send_tablet(mid, note, question, options=options, waits=True, kind="question_value")
-            await self.repo.add_attempt(f"attempt-{mid}", note.id, mid, "question_value", [])
-            reply = await self._wait_reply(mid, min(20.0, max(4.0, deadline - time.monotonic())))
+            reply = await self._ask(note, mid, question, deadline, kind="question_value",
+                                    timeout=20.0, options=options)
             if reply:
-                await self.repo.set_attempt_reply(mid, reply.get("texto", ""))
                 # The operator's answer is the value that gets stored: asking and then
                 # ignoring it would leave a wrong reading in the confirmed part.
                 answer = read_reply(reply.get("texto", ""), self.snapshot, "question_value")
@@ -457,16 +411,13 @@ class NoteWorkflow:
             mid = f"TAB-{note.id}-hist{index}"
             text = (f"{row.tag} {row.variable} = {row.value} {row.unit or ''} está fuera del rango histórico. "
                     "¿Confirmás la lectura?")
-            await self._send_tablet(mid, note, text, options=["Sí, confirmo", "No"], waits=True,
-                                    kind="question_value")
-            await self.repo.add_attempt(f"attempt-{mid}", note.id, mid, "question_value", [])
-            reply = await self._wait_reply(mid, min(20.0, max(4.0, deadline - time.monotonic())))
+            reply = await self._ask(note, mid, text, deadline, kind="question_value", timeout=20.0,
+                                    options=["Sí, confirmo", "No"])
             if not reply:
                 # No answer: the reading is kept but flagged, so the confirmation cannot
                 # be claimed and the part is stored as confirmed-with-differences.
                 row.flags.append("historical_unconfirmed")
                 continue
-            await self.repo.set_attempt_reply(mid, reply.get("texto", ""))
             self._apply_historical_answer(row, reply.get("texto", ""))
 
     def _apply_historical_answer(self, row, text: str) -> None:
@@ -485,32 +436,57 @@ class NoteWorkflow:
 
     # ---------------------------------------------------------------- outcomes
 
-    async def _handle_safety(self, note: NotaRecorrida, draft: PartDraft, deadline: float) -> None:
+    def _event_context(self, draft: PartDraft, rows: list[ExtractedRow], photos: list[str], *,
+                       safety: str | None = None, status: str | None = None) -> dict:
+        """The evidence an event carries: the rows it came from and the archived photos.
+
+        A closed part also keeps the transcript and the part status, so the escalation can
+        be explained after the fact.
+        """
+        context: dict = {
+            "rows": [row.model_dump() for row in rows],
+            "photos": photos,
+            "note_photos": list(draft.photos),
+        }
+        if safety is not None:
+            context["safety"] = safety
+        if status is not None:
+            context["transcript"] = draft.transcript
+            context["status"] = status
+        return context
+
+    def _row_photos(self, draft: PartDraft) -> list[str]:
+        return [row.photo for row in draft.rows if row.photo]
+
+    async def _open_alert(self, note: NotaRecorrida, draft: PartDraft, code: str) -> dict:
+        """Publish the safety alert: the tablet notice first, then the durable event.
+
+        The operator-facing notice goes first because it *is* the emergency action; the
+        stored event follows immediately and neither waits for the photo downloads.
+        """
         event = note_events(draft, self.snapshot, note.ts)[0]
         tag = draft.rows[0].tag if draft.rows else None
-        if draft.safety == "S1" and draft.photos and tag:
+        if code == "S1" and draft.photos and tag:
             self.structural_damage.add(tag)
+        self.alerted[note.id] = event
+        await self.tablet.send(note, f"ALERTA-{note.id}", emergency_text(code, tag),
+                               rows=draft.rows, waits=False, kind="notice")
+        await self.publisher.publish("sistema/eventos", event, sync=True)
+        await self.repo.insert_event(event, self._event_context(draft, draft.rows, self._row_photos(draft),
+                                                                safety=code))
+        return event
+
+    async def _handle_safety(self, note: NotaRecorrida, draft: PartDraft, deadline: float) -> None:
         early = self.alerted.get(note.id)
         if early is None:
-            # The operator-facing notice goes first: it is the emergency action. The
-            # durable event follows immediately; neither waits for photo downloads.
-            self.alerted[note.id] = event
-            mid = f"ALERTA-{note.id}"
-            await self._send_tablet(mid, note, emergency_text(draft.safety or "S1", tag),
-                                    rows=draft.rows, waits=False, kind="notice")
-            await self.publisher.publish("sistema/eventos", event, sync=True)
-            await self.repo.insert_event(event, {"rows": [row.model_dump() for row in draft.rows],
-                                                 "photos": [row.photo for row in draft.rows if row.photo],
-                                                 "note_photos": list(draft.photos),
-                                                 "safety": draft.safety})
+            await self._open_alert(note, draft, draft.safety or "S1")
         else:
             # The alert was already published from a partial transcript. Keep its id
             # (idempotency) and refresh the stored context with the full note.
-            event["id"] = early["id"]
-            await self.repo.update_event_context(early["id"], {
-                "rows": [row.model_dump() for row in draft.rows],
-                "photos": [row.photo for row in draft.rows if row.photo],
-                "note_photos": list(draft.photos), "safety": draft.safety})
+            await self.repo.update_event_context(
+                early["id"],
+                self._event_context(draft, draft.rows, self._row_photos(draft), safety=draft.safety),
+            )
         await self._within(note, "photo download", self._download_photos(note, draft), deadline)
         await self.repo.save_part(note.id, "confirmed", [row.model_dump() for row in draft.rows],
                                   draft.safety, 0)
@@ -529,32 +505,23 @@ class NoteWorkflow:
         if not code:
             return
         draft = parse_transcript(partial, self.snapshot, note_id=note.id, ts=note.ts, photos=note.fotos)
-        event = note_events(draft, self.snapshot, note.ts)[0]
-        tag = draft.rows[0].tag if draft.rows else None
-        self.alerted[note.id] = event
-        log.warning("note %s raised safety alert %s from a partial transcript", note.id, code)
-        await self._send_tablet(f"ALERTA-{note.id}", note, emergency_text(code, tag),
-                                rows=draft.rows, waits=False, kind="notice")
-        await self.publisher.publish("sistema/eventos", event, sync=True)
-        await self.repo.insert_event(event, {"rows": [row.model_dump() for row in draft.rows],
-                                             "photos": [row.photo for row in draft.rows if row.photo],
-                                             "note_photos": list(draft.photos),
-                                             "safety": code})
-        log.warning("note %s raised safety alert %s for %s", note.id, draft.safety, tag)
+        event = await self._open_alert(note, draft, code)
+        log.warning("note %s raised safety alert %s (%s) from a partial transcript",
+                    note.id, code, event["equipo"])
 
     async def _handle_unreadable(self, note: NotaRecorrida) -> None:
         """Audio could not be downloaded or transcribed: never report "sin novedad"."""
-        await self._send_tablet(f"TAB-{note.id}-retry", note,
-                                "No pudimos procesar el audio de esta nota. No se registra como sin novedad; "
-                                "reintentá la grabación y avisá al supervisor.", waits=False, kind="notice")
+        await self.tablet.send(note, f"TAB-{note.id}-retry",
+                               "No pudimos procesar el audio de esta nota. No se registra como sin novedad; "
+                               "reintentá la grabación y avisá al supervisor.", waits=False, kind="notice")
         await self.repo.save_part(note.id, "unreadable", [], None, 0)
         await self.repo.set_note_status(note.id, "failed")
         log.error("note %s could not be transcribed; stored as unreadable", note.id)
 
     async def _handle_empty(self, note: NotaRecorrida, draft: PartDraft) -> None:
         if note.id.startswith("VIVO-"):
-            await self._send_tablet(f"TAB-{note.id}-ok", note,
-                                    "Nota recibida. No hay datos para el parte.", waits=False, kind="notice")
+            await self.tablet.send(note, f"TAB-{note.id}-ok",
+                                   "Nota recibida. No hay datos para el parte.", waits=False, kind="notice")
         else:
             event = note_events(draft, self.snapshot, note.ts)[0]
             await self.publisher.publish("sistema/eventos", event, sync=True)
@@ -567,20 +534,14 @@ class NoteWorkflow:
         await self.repo.save_part(note.id, status, [row.model_dump() for row in draft.rows],
                                   draft.safety, len(draft.rows))
         await self.repo.set_note_status(note.id, "confirmed")
-        photos = [row.photo for row in draft.rows if row.photo]
+        photos = self._row_photos(draft)
         # The plant's own pump state disambiguates a bare "parada" (the reserve pump is
         # normally stopped). Same data, same decision.
         plant_state, _ok = await self._plant_state()
         for event in note_events(draft, self.snapshot, note.ts, plant_state.pumps):
             await self.publisher.publish("sistema/eventos", event, sync=True)
             rows = draft.rows_for(event["equipo"] or "")
-            context = {
-                "rows": [row.model_dump() for row in rows],
-                "photos": photos,
-                "note_photos": list(draft.photos),
-                "transcript": draft.transcript,
-                "status": status,
-            }
+            context = self._event_context(draft, rows, photos, status=status)
             await self.repo.insert_event(event, context)
             if event["tipo"] == ESCALADO:
                 await self.maybe_order(event, rows=rows, sensor_variable=None)
