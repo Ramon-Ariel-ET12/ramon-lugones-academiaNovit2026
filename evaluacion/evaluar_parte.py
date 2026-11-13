@@ -12,23 +12,20 @@ import json
 
 from app.config import get_settings
 from app.domain.plant import load_snapshot_file
+from app.domain.units import PRESSURE_UNITS, to_kg
+from app.domain.vocabulary import values_close
 from app.integrations.plant_api import PlantClient
 from app.persistence.db import Database
 from app.persistence.repository import Repository
 
-PRESSURE = {"kg/cm2", "psi", "bar"}
-
 
 def close(shown, expected, unit, expected_unit) -> bool:
-    if shown is None or expected is None:
-        return shown == expected
-    if unit in PRESSURE and expected_unit in PRESSURE:
-        from app.domain.units import to_kg
-
+    """Whether the part matches the plant truth, with the field's own tolerance."""
+    if unit in PRESSURE_UNITS and expected_unit in PRESSURE_UNITS:
         shown, expected = to_kg(float(shown), unit), to_kg(float(expected), expected_unit)
     elif unit and expected_unit and unit != expected_unit:
         return False
-    return abs(float(shown) - float(expected)) <= max(0.6, abs(float(expected)) * 0.02)
+    return values_close(shown, expected)
 
 
 async def main() -> None:
