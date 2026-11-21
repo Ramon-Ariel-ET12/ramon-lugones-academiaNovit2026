@@ -113,11 +113,14 @@ class SensorDetector:
         # A pump at rest has discharge pressure near suction (~1.5 kg/cm2). That is not
         # a low-pressure anomaly; "parada, en reserva" must stay quiet.
         if variable == "presion_descarga" and value <= 5:
+            was_active = window.active
             window.samples.clear()
             window.active = False
             window.since = None
             window.event_id = None
-            return None, None
+            # The database must learn it too, or a restart would resurrect the old episode
+            # and a later, genuine deviation would reuse the same event id.
+            return None, self.episode(tag, variable) if was_active else None
         transition = window.add(ts, value)
         if transition == "end":
             return None, self.episode(tag, variable)

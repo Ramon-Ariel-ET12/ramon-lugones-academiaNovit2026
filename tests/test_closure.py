@@ -146,3 +146,14 @@ def test_a_missing_proof_is_a_difference(materials, prices):
     result = compare({"tareas": ["I-VIB"], "repuestos": [], "ts": "2026-01-01"}, closure, materials, prices,
                      equipment_count=3)
     assert "prueba" in {difference.kind for difference in result.differences}
+
+
+def test_the_price_list_comes_from_the_repository_texts(materials, prices):
+    """The production path: rag_texts rows -> PriceList (the query must carry `doc`)."""
+    rows = [{"doc": "CT-SVP-2025", "citation": "CT-SVP-2025 §2.1", "section_key": "precios",
+             "text": CONTRACT.read_text(encoding="utf-8")}]
+    from_rows = PriceList.from_chunks(rows)
+    assert len(from_rows) == len(prices)
+    assert from_rows.amount_for(["I-VIB"], equipment_count=3) == 960.0
+    # A row without `doc` is accepted too (a caller that already filtered the document).
+    assert len(PriceList.from_chunks([{"text": rows[0]["text"]}])) == len(prices)

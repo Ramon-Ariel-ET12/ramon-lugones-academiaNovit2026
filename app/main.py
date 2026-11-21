@@ -39,7 +39,7 @@ from app.vision.nvidia import NvidiaVision
 from app.vision.queue import PhotoAnalyser
 from app.workflow.decisions import OrderDecisionService
 from app.workflow.pipeline import OrderPipeline
-from app.workflow.router import route_topic, sensor_parts
+from app.workflow.router import classify, sensor_parts
 
 log = logging.getLogger(__name__)
 
@@ -140,7 +140,7 @@ async def _sensor_digest(ctx_: Context, payload: dict) -> None:
 async def _dispatch_loop(ctx_: Context) -> None:
     async for topic, payload in ctx_.mqtt.messages():
         try:
-            route = route_topic(topic)
+            route = classify(topic, payload).route
             if route == "parte":
                 await ctx_.workflow.enqueue(payload)
             elif route == "respuesta":
@@ -148,7 +148,7 @@ async def _dispatch_loop(ctx_: Context) -> None:
             elif route == "sensor":
                 await _on_sensor_sample(ctx_, payload)
             elif route == "cierre":
-                await ctx_.workflow.handle_closure(payload)
+                await ctx_.workflow.handle_closure_later(payload)
             elif route == "energia":
                 log.info("plant energy state: %s", payload.get("hay_energia"))
             else:
@@ -294,7 +294,7 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_sync_loop(ctx), name="sync"),
         asyncio.create_task(_photo_loop(ctx), name="photos"),
     ]
-    configure_orders(OrderDecisionService(repo, publisher, prices=prices))
+    configure_orders(OrderDecisionService(repo, publisher, prices=prices, materials=materials))
     ctx.ready = True
     # The correction waits for this first heartbeat before releasing the plant clock, so
     # it carries the link state as it is at startup, not the optimistic default.

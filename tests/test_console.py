@@ -86,3 +86,34 @@ async def test_analysis_inputs_degrade_when_the_index_is_broken(snapshot):
     citations, prices = await _analysis_inputs(BrokenRepo(), Settings())
     assert citations.knows("MBP-4 §7.1")
     assert prices is None
+
+
+async def test_a_pending_order_is_republished_after_a_restart_and_a_draft_is_not():
+    """F3: what comes back after a power cut keeps its id and state; nothing goes back to Borrador."""
+    from app.main import _resume_orders
+
+    class Repo:
+        def __init__(self):
+            self.open = [
+                {"id": "OT-PENDING", "payload": {"estado": "PendienteAprobacion", "equipo": "F-201B"}},
+                {"id": "OT-DRAFT", "payload": {"estado": "Borrador", "equipo": "B-101"}},
+                {"id": "OT-DONE", "payload": {"estado": "Certificada", "equipo": "B-101"}},
+            ]
+
+        async def open_orders(self):
+            return self.open
+
+    class Publisher:
+        def __init__(self):
+            self.sent = []
+
+        async def publish(self, topic, payload, sync=True):
+            self.sent.append((topic, payload["estado"]))
+            return True
+
+    class Ctx:
+        repo = Repo()
+        publisher = Publisher()
+
+    await _resume_orders(Ctx())
+    assert [state for _topic, state in Ctx.publisher.sent] == ["PendienteAprobacion", "Certificada"]

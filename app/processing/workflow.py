@@ -160,10 +160,12 @@ class NoteWorkflow:
             return
 
         draft = await self._resolve_ambiguities(note, draft, deadline)
+        # Before the download rewrites row.photo to the local path: the verdicts are keyed
+        # by the plant URL the model was asked about.
+        await self._check_structural_damage(note, draft)
         await self._within(note, "photo download", self._download_photos(note, draft), deadline)
         await self._confirm_historical_range(note, draft, deadline)
 
-        await self._check_structural_damage(note, draft)
         valued = draft.valued_rows()
         if valued:
             draft, confirmed = await self._review_loop(note, draft, deadline)
@@ -645,6 +647,19 @@ class NoteWorkflow:
 
     # ---------------------------------------------------------------- closure
 
+    async def handle_closure_later(self, payload: dict) -> None:
+        """Validate the note now and transcribe it in the background.
+
+        The transcript takes seconds; awaiting it inline stops the MQTT dispatch loop and
+        with it the sensor samples the local safety detector depends on.
+        """
+        try:
+            NotaCierre.model_validate(payload)
+        except Exception as exc:  # noqa: BLE001
+            log.error("invalid closure: %s", exc)
+            return
+        self._spawn(self.handle_closure(payload))
+
     async def handle_closure(self, payload: dict) -> None:
         """Read the technician's closure note, compare it and pass the order to `Ejecutada`.
 
@@ -659,6 +674,9 @@ class NoteWorkflow:
         row = await self.repo.orders_by_id(closure.orden_id)
         if not row:
             log.warning("closure for unknown order %s", closure.orden_id)
+            return
+        if await self.repo.get_closure(closure.orden_id) is not None:
+            log.info("closure for %s already processed", closure.orden_id)
             return
         transcript = await self._transcribe_audio(f"CIERRE-{closure.orden_id}", closure.audio_url,
                                                   deadline=time.monotonic() + self.settings.note_timeout_s)

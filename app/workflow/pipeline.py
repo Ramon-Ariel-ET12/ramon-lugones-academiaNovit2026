@@ -28,9 +28,6 @@ from app.rag.search import ManualSearch
 
 log = logging.getLogger(__name__)
 
-# Tasks that resolve nothing by themselves: a filter's bill of materials has no pump kit.
-NO_ORDER = ()
-
 
 class OrderPipeline:
     """Evidence → analysis → reviewed draft → rules → published order."""

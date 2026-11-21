@@ -13,6 +13,7 @@ from dataclasses import dataclass
 from datetime import date
 
 VIGENTE_DESDE = date(2025, 1, 1)
+CONTRACT_DOC = "CT-SVP-2025"
 
 # Task code -> contract item (Anexo II). Anything else has no closed price.
 ITEM_OF_TASK = {"T-B-ROD": "SVP-01", "T-B-ALI": "SVP-02", "I-VIB": "SVP-03"}
@@ -80,8 +81,10 @@ class PriceList:
     @classmethod
     def from_chunks(cls, chunks: list[dict]) -> PriceList:
         """The §2.1 table as it was indexed (the chunk text keeps the rows flat)."""
+        # The caller already selected the document; ``doc`` is only filtered when present
+        # so a query that does not return it (or a plain list of rows) still works.
         price_rows = [chunk.get("text", "") for chunk in chunks
-                      if str(chunk.get("doc", "")).upper() == "CT-SVP-2025"]
+                      if not chunk.get("doc") or str(chunk["doc"]).upper() == CONTRACT_DOC]
         return cls.from_markdown("\n".join(price_rows))
 
     def hours_included(self, tasks: list[str], equipment_count: int = 1) -> float:

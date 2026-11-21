@@ -22,7 +22,9 @@ from datetime import UTC, datetime
 from typing import Literal
 
 from app.domain.closure import ClosureComparison
+from app.domain.materials import Materials
 from app.persistence.repository import Repository
+from app.processing.closure import compare, parse_closure
 from app.publisher import Publisher
 
 log = logging.getLogger(__name__)
@@ -59,9 +61,11 @@ class DecisionResult:
 
 
 class OrderDecisionService:
-    def __init__(self, repo: Repository, publisher: Publisher, *, prices=None):
+    def __init__(self, repo: Repository, publisher: Publisher, *, prices=None,
+                 materials: Materials | None = None):
         self.repo = repo
         self.publisher = publisher
+        self.materials = materials
         # A ``PriceList`` (app.domain.billing) used to compute the habilita amount. It is
         # injected so the service stays testable and so the contract table can come from
         # the indexed document instead of a constant in the code.
@@ -69,6 +73,7 @@ class OrderDecisionService:
 
     async def decide(self, order_id: str, *, role: str, action: str, actor: str,
                      motive: str | None = None, habilita: str | None = None,
+                     declared_amount: float | None = None,
                      comparison: ClosureComparison | None = None) -> DecisionResult:
         if role not in TRANSITIONS:
             raise DecisionError(f"rol desconocido: {role}")
@@ -91,7 +96,9 @@ class OrderDecisionService:
         if action == "reject" and not (motive or "").strip():
             raise DecisionError("rechazar una orden exige el motivo")
         if action == "certify":
-            amount, habilita = await self._certification_amount(row, payload, habilita, comparison)
+            amount, habilita, comparison = await self._certification_amount(
+                row, payload, habilita, comparison, declared_amount,
+            )
 
         payload["estado"] = target
         payload["ts"] = datetime.now(UTC).isoformat()
@@ -103,6 +110,12 @@ class OrderDecisionService:
             payload["habilita"] = None
             payload["monto_habilita_usd"] = None
 
+        if comparison is not None:
+            await self.repo.save_closure(
+                order_id, None, comparison.closure.transcript, list(comparison.closure.parts_used),
+                [difference.model_dump() for difference in comparison.differences],
+                monto=comparison.monto_habilita_usd,
+            )
         published = await self.publisher.publish("sistema/ordenes", payload, sync=True)
         if not published:
             raise DecisionError(f"la orden {order_id} no valida contra el contrato")
@@ -116,16 +129,31 @@ class OrderDecisionService:
         return DecisionResult(order_id=order_id, state=target, role=role, action=action)
 
     async def _certification_amount(self, row: dict, payload: dict, habilita: str | None,
-                                    comparison: ClosureComparison | None) -> tuple[float | None, str | None]:
-        """The amount comes from the order and the contract, never from the closure."""
+                                    comparison: ClosureComparison | None,
+                                    declared_amount: float | None) -> tuple[float | None, str | None,
+                                                                          ClosureComparison | None]:
+        """The amount comes from the order and the contract, never from the declaration.
+
+        An order is always about one equipment, so ``I-VIB`` (priced per measured
+        equipment) certifies one measurement. When the inspector states what the
+        contractor invoiced, the comparison is recomputed here so the difference is
+        recorded with the decision.
+        """
         if self.prices is None:
             raise DecisionError("no hay lista de precios del contrato configurada")
-        amount = comparison.monto_habilita_usd if comparison is not None and comparison.habilita else None
+        started = str(payload.get("ts") or "")[:10]
+        if declared_amount is not None and self.materials is not None:
+            closure = await self.repo.get_closure(row["id"])
+            if closure is not None:
+                parts = parse_closure(str(closure.get("transcripcion") or ""), orden_id=row["id"],
+                                      materials=self.materials)
+                comparison = compare(payload, parts, self.materials, self.prices,
+                                     started_at=started, declared_amount=declared_amount)
+        amount = comparison.monto_habilita_usd if comparison is not None else None
         if amount is None:
-            started = (payload.get("ts") or "")[:10]
-            amount = self.prices.amount_for(list(payload.get("tareas") or []),
-                                           started_at=started, equipment_count=1)
+            amount = self.prices.amount_for(list(payload.get("tareas") or []), started_at=started,
+                                           equipment_count=1)
         habilita = habilita or (comparison.habilita if comparison is not None else None)
         if amount is None or not habilita:
             raise DecisionError("para certificar hacen falta la habilitación y el monto del contrato")
-        return float(amount), habilita
+        return float(amount), habilita, comparison

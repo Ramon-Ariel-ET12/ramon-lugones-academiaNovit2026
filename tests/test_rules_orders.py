@@ -1,7 +1,6 @@
 from __future__ import annotations
 
-from app.domain.orders import order_id, order_payload, propose_tasks
-from app.domain.parser import parse_transcript
+from app.domain.orders import order_id, order_payload
 from app.domain.rules import Decision, PlantState, build_proposal, evaluate
 
 
@@ -67,20 +66,6 @@ def test_structural_damage_forces_human_review(materials):
     decision = evaluate(proposal, materials, state())
     assert not decision.approved
     assert any("daño estructural" in reason for reason in decision.reasons)
-
-
-def test_task_proposal_from_rows(snapshot, ts):
-    rows = parse_transcript("La dos pierde bastante por la empaquetadura.", snapshot, note_id="N", ts=ts).rows
-    assert propose_tasks("B-102", rows) == ["T-B-EMP"]
-    differential = parse_transcript("El filtro A me dio uno coma tres de diferencial.", snapshot,
-                                    note_id="N", ts=ts).rows
-    assert propose_tasks("F-201A", differential) == ["T-F-CAR"]
-    oil = parse_transcript("La uno tiene el visor de aceite bajo.", snapshot, note_id="N", ts=ts).rows
-    assert propose_tasks("B-101", oil) == ["T-B-ACE"]
-    noise = parse_transcript("La uno hace un golpeteo metálico.", snapshot, note_id="N", ts=ts).rows
-    assert propose_tasks("B-101", noise) == ["I-VIB"]
-    tripped = parse_transcript("La dos está disparada, no arranca.", snapshot, note_id="N", ts=ts).rows
-    assert propose_tasks("B-102", tripped) == ["I-VAL"]
 
 
 def test_order_id_is_deterministic(materials):

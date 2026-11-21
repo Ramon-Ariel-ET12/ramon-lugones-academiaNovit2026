@@ -88,6 +88,6 @@ class RagRepository(DbRepository):
     async def rag_texts(self, doc: str) -> list[dict]:
         """The indexed text of one document, in section order (used to read the contract)."""
         return await self.db.fetch(
-            "SELECT citation, section_key, text FROM rag_chunks WHERE doc = %s ORDER BY citation",
+            "SELECT doc, citation, section_key, text FROM rag_chunks WHERE doc = %s ORDER BY citation",
             (doc,),
         )
