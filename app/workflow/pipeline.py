@@ -46,6 +46,9 @@ class OrderPipeline:
         self.materials = materials
         self.citations = citations
         self.search = search
+        # Two escalated events can be analysed at the same time (orders run detached);
+        # the duplicate check and the creation must not interleave.
+        self._lock = asyncio.Lock()
 
     # ---------------------------------------------------------------- steps
 
@@ -97,32 +100,33 @@ class OrderPipeline:
             log.info("event %s on %s needs no work order (analysis: %s)", event.get("id"), equipment,
                      analysis.causes[0].code if analysis.causes else "sin causa")
             return None
-        existing = await self.repo.open_order(equipment, analysis.tasks)
-        if existing:
-            log.info("order already open for %s %s: %s", equipment, analysis.tasks, existing["id"])
-            return None
+        async with self._lock:
+            existing = await self.repo.open_order(equipment, analysis.tasks)
+            if existing:
+                log.info("order already open for %s %s: %s", equipment, analysis.tasks, existing["id"])
+                return None
 
-        proposal, decision = make_proposal(
-            equipment, analysis.tasks, self.materials, plant_state,
-            structural_damage=structural_damage, forced_pending=not link_ok,
-        )
-        oid = order_id(equipment, analysis.tasks, event["id"])
-        now = datetime.now(UTC)
-        draft_state = Decision(approved=False)
-        borrador = order_payload(oid, now, "Borrador", proposal, draft_state, [event["id"]])
-        final = order_payload(oid, now, decision.state, proposal, decision, [event["id"]])
-        await self.repo.save_analysis(
-            oid, {"causes": [cause.model_dump() for cause in analysis.causes]},
-            correlation_id=event["id"], citations=analysis.citations,
-            review={"findings": [finding.model_dump() for finding in analysis.findings],
-                    "history": analysis.history, "parts": analysis.parts,
-                    "symptoms": [symptom.model_dump() for symptom in analysis.symptoms]},
-        )
-        await self.publisher.publish("sistema/ordenes", borrador, sync=True)
-        await self.repo.upsert_order(oid, equipment, analysis.tasks, "Borrador", borrador)
-        await self.publisher.publish("sistema/ordenes", final, sync=True)
-        await self.repo.upsert_order(oid, equipment, analysis.tasks, decision.state, final)
-        await self.repo.record_decision(oid, decision.state, decision.reasons, plant_state.model_dump())
+            proposal, decision = make_proposal(
+                equipment, analysis.tasks, self.materials, plant_state,
+                structural_damage=structural_damage, forced_pending=not link_ok,
+            )
+            oid = order_id(equipment, analysis.tasks, event["id"])
+            now = datetime.now(UTC)
+            draft_state = Decision(approved=False)
+            borrador = order_payload(oid, now, "Borrador", proposal, draft_state, [event["id"]])
+            final = order_payload(oid, now, decision.state, proposal, decision, [event["id"]])
+            await self.repo.save_analysis(
+                oid, {"causes": [cause.model_dump() for cause in analysis.causes]},
+                correlation_id=event["id"], citations=analysis.citations,
+                review={"findings": [finding.model_dump() for finding in analysis.findings],
+                        "history": analysis.history, "parts": analysis.parts,
+                        "symptoms": [symptom.model_dump() for symptom in analysis.symptoms]},
+            )
+            await self.publisher.publish("sistema/ordenes", borrador, sync=True)
+            await self.repo.upsert_order(oid, equipment, analysis.tasks, "Borrador", borrador)
+            await self.publisher.publish("sistema/ordenes", final, sync=True)
+            await self.repo.upsert_order(oid, equipment, analysis.tasks, decision.state, final)
+            await self.repo.record_decision(oid, decision.state, decision.reasons, plant_state.model_dump())
         log.info("order %s for %s %s -> %s (%.0f ms; causes: %s)", oid, equipment, analysis.tasks,
                  decision.state, (time.monotonic() - started) * 1000,
                  ", ".join(cause.code or cause.title for cause in analysis.causes[:3]))

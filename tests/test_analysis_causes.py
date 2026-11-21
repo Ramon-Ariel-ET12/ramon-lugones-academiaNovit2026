@@ -134,8 +134,10 @@ def test_thin_evidence_asks_for_an_inspection(materials):
 def test_an_oscillating_discharge_gauge_is_the_f02_signature(materials):
     """The plant's own F02: vibration high and the discharge pressure swings."""
     symptoms = [Symptom(name="vibracion_alta", detail="vibración 8,1 mm/s")]
-    trend = {"vibracion": {"n": 40, "min": 3.0, "max": 8.4, "last": 8.1, "unit": "mm/s"},
-             "presion_descarga": {"n": 40, "min": 156.0, "max": 163.0, "last": 159.0, "unit": "psi"}}
+    trend = {"vibracion": {"n": 40, "min": 3.0, "max": 8.4, "last": 8.1, "osc": 0.2, "unit": "mm/s"},
+             # The gauge swings ~2,7 psi at every sample: that is a pulsation.
+             "presion_descarga": {"n": 40, "min": 156.0, "max": 163.0, "last": 159.0, "osc": 2.7,
+                                  "unit": "psi"}}
     causes = rank_causes("B-102", symptoms, trend)
     assert causes[0].code == "F02"
     assert tasks_for(causes, "B-102", materials) == ["T-B-VAL"]
@@ -143,7 +145,9 @@ def test_an_oscillating_discharge_gauge_is_the_f02_signature(materials):
 
 def test_a_steady_discharge_with_vibration_is_not_f02(materials):
     symptoms = [Symptom(name="vibracion_alta", detail="vibración 8,1 mm/s")]
-    trend = {"presion_descarga": {"n": 40, "min": 159.1, "max": 159.7, "last": 159.4, "unit": "psi"}}
+    # A slow level change moves the range but not the step between samples.
+    trend = {"presion_descarga": {"n": 40, "min": 156.0, "max": 163.0, "last": 159.4, "osc": 0.18,
+                                  "unit": "psi"}}
     causes = rank_causes("B-102", symptoms, trend)
     assert causes[0].code != "F02"
 
@@ -160,3 +164,25 @@ def test_every_citation_the_engine_uses_exists_in_the_corpus():
 
     for citation in list(CITATION_OF.values()) + list(DIFFERENTIAL_CITATION.values()):
         assert citation in known, f"{citation} no existe en el corpus"
+
+
+def test_rising_oil_temperature_is_a_symptom_even_below_the_alarm(snapshot):
+    """§6.2: F03 shows up as an oil temperature that climbs, alarm or not."""
+    trend = {"temperatura_aceite": {"n": 40, "min": 58.0, "max": 70.0, "last": 69.0, "osc": 0.2,
+                                    "unit": "degC"}}
+    symptoms = detect_symptoms("B-101", [], "vibracion", trend, snapshot)
+    assert "temperatura_aceite_alta" in [symptom.name for symptom in symptoms]
+
+
+def test_a_flat_oil_temperature_is_not_a_symptom(snapshot):
+    trend = {"temperatura_aceite": {"n": 40, "min": 60.0, "max": 61.0, "last": 60.5, "osc": 0.1,
+                                    "unit": "degC"}}
+    assert detect_symptoms("B-101", [], None, trend, snapshot) == []
+
+
+def test_vibration_with_rising_oil_ranks_the_bearing_first(materials):
+    symptoms = [Symptom(name="vibracion_alta", detail="vibración 7,8 mm/s"),
+                Symptom(name="temperatura_aceite_alta", detail="el aceite subió 12 °C")]
+    causes = rank_causes("B-101", symptoms, {"presion_descarga": {"n": 40, "osc": 0.2}})
+    assert causes[0].code == "F03"
+    assert tasks_for(causes, "B-101", materials) == ["T-B-ROD"]

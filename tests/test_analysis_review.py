@@ -67,3 +67,12 @@ def test_citations_are_deduplicated_in_order():
     causes = [cause(citation="MBP-4 §6.4"), cause(citation="MBP-4 §7.1"),
               cause(citation="MBP-4 §6.4")]
     assert citations_of(causes) == ["MBP-4 §6.4", "MBP-4 §7.1"]
+
+
+def test_the_index_accepts_the_rows_the_database_returns():
+    """rag_citations() returns {"citation", "current"}: the reviewer must read them."""
+    index = CorpusCitations([{"citation": "MBP-4 §7.1", "current": True},
+                             {"citation": "TX350-C §3.2", "current": False}])
+    assert index.knows("MBP-4 §7.1") and index.is_current("MBP-4 §7.1")
+    assert index.knows("TX350-C §3.2") and not index.is_current("TX350-C §3.2")
+    assert not index.knows("MBP-9 §1.1")

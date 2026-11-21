@@ -72,3 +72,17 @@ def test_the_console_shows_the_orders_a_human_has_to_decide():
     assert "requiere contratista" in page
     assert "declara 26,5 h" in page and "USD 1150" in page
     assert "scripts/orden.py aprobar OT-1" in page
+
+
+async def test_analysis_inputs_degrade_when_the_index_is_broken(snapshot):
+    """A broken corpus must not keep the plant from starting."""
+    from app.config import Settings
+    from app.main import _analysis_inputs
+
+    class BrokenRepo:
+        async def rag_citations(self):
+            raise RuntimeError("index unavailable")
+
+    citations, prices = await _analysis_inputs(BrokenRepo(), Settings())
+    assert citations.knows("MBP-4 §7.1")
+    assert prices is None

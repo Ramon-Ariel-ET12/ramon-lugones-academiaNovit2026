@@ -21,6 +21,8 @@ SENSOR_SYMPTOMS: dict[str, SymptomName] = {
 }
 
 NORMAL_WORDS = ("sin novedad", "normal", "no vibra", "no hay ruido", "estable")
+# Degrees the oil must climb inside the window to be F03/F04 evidence (§6.2 "en aumento").
+OIL_TEMPERATURE_RISE = 8.0
 
 
 def _row_symptoms(row: ExtractedRow, snapshot: PlantSnapshot) -> list[Symptom]:
@@ -90,6 +92,14 @@ def _trend_symptoms(equipment: str, trend: dict[str, dict], snapshot: PlantSnaps
             continue
         high_side = limit.high is not None and peak is not None and peak >= limit.high
         low_side = limit.low is not None and floor is not None and floor <= limit.low
+        if variable == "temperatura_aceite" and not (high_side or low_side):
+            # §6.2: F03 and F04 show up as an oil temperature that climbs, alarm or not.
+            rise = (last or 0.0) - (floor or last or 0.0)
+            if rise >= OIL_TEMPERATURE_RISE:
+                symptoms.append(Symptom(name="temperatura_aceite_alta", tag=equipment, source="sensor",
+                                        value=last, unit=unit,
+                                        detail=f"el aceite subió {rise:.1f} °C en la ventana"))
+            continue
         if not (high_side or low_side):
             continue
         extreme = peak if high_side else floor

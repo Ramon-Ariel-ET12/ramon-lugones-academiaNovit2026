@@ -554,7 +554,7 @@ class NoteWorkflow:
             context = self._event_context(draft, rows, photos, status=status)
             await self.repo.insert_event(event, context)
             if event["tipo"] == ESCALADO:
-                await self.maybe_order(event, rows=rows, sensor_variable=None, photos=photos)
+                await self.maybe_order_later(event, rows=rows, sensor_variable=None, photos=photos)
                 # The evidence (recent sensor trend, order history) is fetched after the
                 # event is published and stored, so a slow historian never delays the
                 # note or the MQTT dispatch loop.
@@ -596,6 +596,24 @@ class NoteWorkflow:
             log.error("plant state unavailable: %s", exc)
             return PlantState(pumps={}), False
 
+    async def maybe_order_later(self, event: dict, *, rows: list[ExtractedRow],
+                                sensor_variable: str | None, photos: list[str] | None = None) -> None:
+        """Queue the order work in the background.
+
+        The analysis fetches the historian, the history and the manuals; running it inline
+        would stop the note worker (and the MQTT dispatch loop, for sensors) for seconds
+        on every escalation, and the plant would see the notes and the replies arriving
+        late. The order is idempotent, so running it detached is safe.
+        """
+        self._spawn(self._draft_order(event, rows=rows, sensor_variable=sensor_variable, photos=photos))
+
+    async def _draft_order(self, event: dict, *, rows: list[ExtractedRow],
+                           sensor_variable: str | None, photos: list[str] | None) -> None:
+        try:
+            await self.maybe_order(event, rows=rows, sensor_variable=sensor_variable, photos=photos)
+        except Exception:
+            log.exception("order for event %s could not be decided", event.get("id"))
+
     async def maybe_order(self, event: dict, *, rows: list[ExtractedRow], sensor_variable: str | None,
                           photos: list[str] | None = None) -> dict | None:
         """Analyse the event and publish its order, or nothing when it does not need one."""
@@ -616,7 +634,7 @@ class NoteWorkflow:
         await self.publisher.publish("sistema/eventos", event, sync=True)
         context: dict = {"sensor_variable": variable}
         await self.repo.insert_event(event, context)
-        await self.maybe_order(event, rows=[], sensor_variable=variable)
+        await self.maybe_order_later(event, rows=[], sensor_variable=variable)
         self._spawn(self._enrich_event(event, [], [], context))
 
     # ---------------------------------------------------------------- closure

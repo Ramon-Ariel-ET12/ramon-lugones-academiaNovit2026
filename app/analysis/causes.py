@@ -57,10 +57,13 @@ def _details(symptoms: list[Symptom], *names: str) -> list[str]:
     return [symptom.detail for symptom in symptoms if symptom.name in names and symptom.detail]
 
 
-# F02 pulsation: the discharge gauge swings a few kg/cm2 around its mean. The plant's
-# own noise is ±0,15, so a spread of 2 kg/cm2 or more is the fault and not the sensor.
-PULSATION_SPREAD = 2.0
+# F02 pulsation: the discharge gauge swings a few kg/cm2 at every sample. The plant's own
+# noise is ±0,15, so a mean step of 1 kg/cm2 between consecutive samples is the fault. The
+# window range is deliberately NOT used: a slow level change looks exactly the same.
+PULSATION_STEP = 1.0
 PULSATION_MIN_SAMPLES = 5
+# F03/F04: the oil temperature rising inside the window is a signature even under the alarm.
+OIL_TEMPERATURE_RISE = 8.0
 
 
 def _pulsating(symptoms: list[Symptom], trend: dict[str, dict] | None) -> bool:
@@ -75,10 +78,9 @@ def _pulsating(symptoms: list[Symptom], trend: dict[str, dict] | None) -> bool:
     if any(word in text for word in ("pulsacion", "pulsación", "oscila", "golpeteo", "golpea")):
         return True
     stats = (trend or {}).get("presion_descarga") or {}
-    low, high = stats.get("min"), stats.get("max")
-    if low is None or high is None or int(stats.get("n") or 0) < PULSATION_MIN_SAMPLES:
+    if int(stats.get("n") or 0) < PULSATION_MIN_SAMPLES:
         return False
-    return float(high) - float(low) >= PULSATION_SPREAD
+    return float(stats.get("osc") or 0.0) >= PULSATION_STEP
 
 
 def _cause(code: str, *, confidence: str, evidence: list[str], missing: list[str],

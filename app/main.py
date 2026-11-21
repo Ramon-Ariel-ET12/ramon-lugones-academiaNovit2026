@@ -212,10 +212,17 @@ async def _analysis_inputs(repo: Repository, settings: Settings) -> tuple[Corpus
     Both come from the indexed corpus (the same text the retrieval uses); when the index
     is empty they fall back to the bundled file so the pipeline still works on a cold DB.
     """
-    rows = await repo.rag_citations()
-    citations = CorpusCitations(rows) if rows else CorpusCitations.from_settings(settings)
-    contract = await repo.rag_texts("CT-SVP-2025") if rows else []
-    prices = PriceList.from_chunks(contract) if contract else None
+    try:
+        rows = await repo.rag_citations()
+        citations = CorpusCitations(rows) if rows else CorpusCitations.from_settings(settings)
+        contract = await repo.rag_texts("CT-SVP-2025") if rows else []
+        prices = PriceList.from_chunks(contract) if contract else None
+    except Exception:
+        # The analysis helps; it never keeps the plant from starting. The safety path and
+        # the notes come first, so a broken index degrades to the bundled corpus.
+        log.exception("analysis inputs could not be read: using the bundled corpus")
+        citations = CorpusCitations.from_settings(settings)
+        prices = None
     if prices is None or len(prices) == 0:
         log.warning("CT-SVP-2025 price list not indexed yet: certification amounts unavailable")
         prices = None

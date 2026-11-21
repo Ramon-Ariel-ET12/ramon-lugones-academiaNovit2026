@@ -41,7 +41,9 @@ class CorpusCitations:
     def __init__(self, chunks: list[dict]):
         self._current: dict[str, bool] = {}
         for chunk in chunks:
-            row = chunk if "text" in chunk else canonical(chunk)
+            # The database returns (citation, current); the course file returns the raw
+            # fragment (id/texto/vigente). Either is accepted, discriminated by `citation`.
+            row = chunk if "citation" in chunk else canonical(chunk)
             citation = _normalise(row.get("citation"))
             if citation:
                 self._current[citation] = row.get("current") is not False

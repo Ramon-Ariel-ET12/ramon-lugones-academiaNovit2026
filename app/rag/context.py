@@ -8,11 +8,17 @@ orders and available parts, with no LLM in the loop.
 from __future__ import annotations
 
 from datetime import datetime, timedelta
+from itertools import pairwise
+from statistics import mean
 
 from app.domain.materials import Materials
 from app.domain.models import ExtractedRow, PlantSnapshot
 from app.integrations.plant_api import PlantClient
 from app.rag.search import ManualSearch
+
+# How many samples the oscillation estimate looks at: enough to see a pulsation, short
+# enough that a slow level change in the window does not look like one.
+OSCILLATION_SAMPLES = 40
 
 
 def _query_for(equipment: str, rows: list[ExtractedRow], snapshot: PlantSnapshot) -> str:
@@ -50,11 +56,16 @@ async def sensor_trend(plant: PlantClient, snapshot: PlantSnapshot, equipment: s
         if not values:
             continue
         limit = snapshot.limit(tag, variable)
+        window = values[-OSCILLATION_SAMPLES:]
+        steps = [abs(later - earlier) for earlier, later in pairwise(window)]
         trend[variable] = {
             "n": len(values),
             "min": round(min(values), 2),
             "max": round(max(values), 2),
             "last": round(values[-1], 2),
+            # Mean step between consecutive samples: a pulsating gauge moves a lot every
+            # sample, a drifting level barely moves. The range alone cannot tell them apart.
+            "osc": round(mean(steps), 3) if steps else 0.0,
             "unit": limit.unit if limit else "",
         }
     return trend
