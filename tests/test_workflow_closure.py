@@ -168,3 +168,42 @@ async def test_an_offline_photo_is_not_read_as_no_damage(materials):
                                          observation="goteo", photo="/media/fotos/2.jpg")])
     await workflow._check_structural_damage(note, draft)
     assert workflow.structural_damage == set()
+
+
+# ------------------------------------------------------------------ resume after a kill
+
+
+async def test_an_active_deviation_without_an_order_is_redrafted_on_restart(materials):
+    """F3: the kill lands mid-analysis, the episode survives, the order must still appear."""
+    created: list[str] = []
+
+    class Repo(ClosureRepo):
+        async def sensor_episodes(self):
+            return [{"tag": "F-201B", "variable": "presion_diferencial", "active": True,
+                     "since": "2026-11-06T15:20:00-03:00", "event_id": "E-F07"}]
+
+        async def open_order(self, equipment, tasks):
+            return None
+
+    class Pipeline:
+        async def run(self, event, **kwargs):
+            created.append(event["id"])
+            return {"id": "OT-1"}
+
+    repo = Repo(None)
+    workflow = await workflow_with(repo, materials)
+    workflow.pipeline = Pipeline()  # type: ignore[assignment]
+    await workflow._resume_episodes()
+    for task in list(workflow.background):
+        await task
+    assert created == ["E-F07"]
+
+
+async def test_nothing_active_means_no_order_is_redrafted(materials):
+    class Repo(ClosureRepo):
+        async def sensor_episodes(self):
+            return []
+
+    workflow = await workflow_with(Repo(None), materials)
+    await workflow._resume_episodes()
+    assert workflow.background == set()

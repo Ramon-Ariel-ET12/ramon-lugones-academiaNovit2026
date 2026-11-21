@@ -71,6 +71,33 @@ class NoteWorkflow:
         self._task = asyncio.create_task(self._worker(), name="note-worker")
         for row in await self.repo.pending_notes():
             await self._queue_row(row)
+        await self._resume_episodes()
+
+    async def _resume_episodes(self) -> None:
+        """Re-draft the order of every deviation still active when the process died.
+
+        The detector keeps its episodes in ``sensor_state``, so a restart in the middle of
+        a deviation knows the event id. Without this, a kill that lands while the analysis
+        is running (the power cut of ``sin-luz`` does exactly that) leaves the escalation
+        announced and the order never drafted: the pending order the planner must find
+        after the blackout simply would not exist.
+        """
+        try:
+            episodes = await self.repo.sensor_episodes()
+        except Exception:
+            log.warning("sensor episodes could not be read at startup", exc_info=True)
+            return
+        for row in episodes:
+            event_id = row.get("event_id")
+            tag = row.get("tag")
+            if not event_id or not tag:
+                continue
+            event = {"id": event_id, "ts": (row.get("since") or datetime.now(UTC)).isoformat()
+                     if hasattr(row.get("since"), "isoformat") else str(row.get("since")),
+                     "tipo": "Escalado", "equipo": tag, "origen": "sensor", "parte_id": None,
+                     "nota_ids": [], "resumen": f"Desvío sostenido de {row.get('variable')} en {tag}"}
+            log.info("resuming the order for the active deviation %s on %s", event_id, tag)
+            await self.maybe_order_later(event, rows=[], sensor_variable=row.get("variable"))
 
     async def stop(self) -> None:
         if self._task:
