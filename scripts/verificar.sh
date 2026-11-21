@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Full verification of Delivery 1, in the only order that works.
+# Full verification of the entregas (1 and 2), in the only order that works.
 #
 #   ./scripts/verificar.sh                 # everything, stack left running for inspection
 #   ./scripts/verificar.sh --sin-corrector # skip the official run (reuse the last one)
@@ -10,13 +10,18 @@
 #   1. stop the development stack  (the official run and the dev stack both publish
 #      8200/8300; if the dev stack is up, the corrector's `up -d` fails with
 #      "Bind for 0.0.0.0:8300 failed: port is already allocated")
-#   2. official correction: martes-tranquilo + fuga-sin-enlace
+#   2. official correction: tormenta-perfecta + sin-luz + contratista + fuga-sin-enlace
+#      (martes-tranquilo is the notes-heavy delivery-1 scenario: add it with
+#       ESCENARIOS="martes-tranquilo ..." when there is time)
 #   3. independent re-scoring of the saved run
 #   4. bring the development stack back up
 #   5. unit + integration tests and lint
 #   6. RAG evaluation
 #   7. human-like end-to-end probe
 set -uo pipefail
+
+# The Anexo 2 scenarios: they measure D1, D2, F3 and G1 plus the delivery-1 criteria.
+ESCENARIOS="${ESCENARIOS:-tormenta-perfecta sin-luz contratista fuga-sin-enlace}"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
@@ -65,15 +70,15 @@ if [ "$CORRECTOR" -eq 1 ]; then
     done
     echo "   8200 y 8300 libres"
 
-    paso "2/7 Corrección oficial (martes-tranquilo + fuga-sin-enlace)"
+    paso "2/7 Corrección oficial ($ESCENARIOS)"
     rm -rf "$CORRIDA"
     uv run --with httpx --with pyyaml python "$PLANT/correccion/corregir.py" \
         --repo "$ROOT" --alumno "${ALUMNO:-Ramón Ariel}" \
-        --escenarios martes-tranquilo fuga-sin-enlace 2>&1 | tee "$SALIDA/correccion.log"
+        --escenarios $ESCENARIOS 2>&1 | tee "$SALIDA/correccion.log"
     resultado "corrección oficial" "${PIPESTATUS[0]}"
 
     paso "3/7 Verificación independiente de la corrida guardada"
-    for escenario in martes-tranquilo fuga-sin-enlace; do
+    for escenario in $ESCENARIOS; do
         uv run python scripts/audit_escenario.py "$CORRIDA/$escenario.json" \
             2>&1 | tee "$SALIDA/audit-$escenario.txt"
         resultado "auditoría $escenario" "${PIPESTATUS[0]}"

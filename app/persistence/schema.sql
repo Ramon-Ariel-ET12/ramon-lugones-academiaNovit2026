@@ -87,6 +87,10 @@ CREATE TABLE IF NOT EXISTS decisions (
     created_at    timestamptz NOT NULL DEFAULT now()
 );
 
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS actor text;
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS role text;
+ALTER TABLE decisions ADD COLUMN IF NOT EXISTS correlation_id text;
+
 CREATE TABLE IF NOT EXISTS sensor_state (
     tag           text NOT NULL,
     variable      text NOT NULL,
@@ -139,3 +143,38 @@ CREATE TABLE IF NOT EXISTS rag_chunks (
 CREATE INDEX IF NOT EXISTS rag_tsv_idx ON rag_chunks USING gin (tsv);
 CREATE INDEX IF NOT EXISTS rag_embedding_idx ON rag_chunks
     USING hnsw (embedding vector_cosine_ops);
+
+-- Entrega 2: the analysis behind every order, the technician's closure and the photo
+-- queue. All idempotent by their natural key so a restart mid-flight cannot duplicate.
+
+CREATE TABLE IF NOT EXISTS order_analysis (
+    order_id       text PRIMARY KEY,
+    correlation_id text,
+    causes         jsonb NOT NULL DEFAULT '[]'::jsonb,
+    citations      jsonb NOT NULL DEFAULT '[]'::jsonb,
+    review         jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS closures (
+    orden_id       text PRIMARY KEY,
+    nota_id        text,
+    correlation_id text,
+    transcripcion  text NOT NULL DEFAULT '',
+    partes         jsonb NOT NULL DEFAULT '[]'::jsonb,
+    diferencias    jsonb NOT NULL DEFAULT '[]'::jsonb,
+    monto_habilita_usd numeric(12, 2),
+    created_at     timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS photo_analysis (
+    id            text PRIMARY KEY,
+    photo         text NOT NULL,
+    status        text NOT NULL DEFAULT 'pending',
+    result        jsonb,
+    attempts      integer NOT NULL DEFAULT 0,
+    created_at    timestamptz NOT NULL DEFAULT now(),
+    updated_at    timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS photo_analysis_pending_idx ON photo_analysis (status, created_at);

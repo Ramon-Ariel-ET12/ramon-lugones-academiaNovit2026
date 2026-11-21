@@ -35,12 +35,22 @@ class Settings(BaseSettings):
     llm_enabled: bool = Field(False, alias="LLM_ENABLED")
     llm_model: str = Field("Qwen/Qwen2.5-0.5B-Instruct", alias="LLM_MODEL")
 
+    # Vision (Entrega 2). The photo analysis runs in the NVIDIA cloud through the link
+    # proxy, so it is disabled unless a key is configured and it never blocks the alert:
+    # with the link down the photo is queued and analysed when it comes back.
+    vision_enabled: bool = Field(False, alias="VISION_ENABLED")
+    vision_model: str = Field("meta/llama-3.2-11b-vision-instruct", alias="VISION_MODEL")
+    vision_base_url: str = Field("https://integrate.api.nvidia.com/v1", alias="VISION_BASE_URL")
+    vision_api_key: str = Field("", alias="NVIDIA_API_KEY")
+    vision_timeout_s: float = Field(45.0, alias="VISION_TIMEOUT_S")
+
     materials_path: Path = Field(ROOT / "datos" / "materiales.yaml", alias="MATERIALS_PATH")
     plant_snapshot_path: Path = Field(ROOT / "datos" / "planta.yaml", alias="PLANT_SNAPSHOT_PATH")
     media_dir: Path = Field(ROOT / "var" / "media", alias="MEDIA_DIR")
     evaluation_dir: Path = Field(ROOT / "evaluacion", alias="EVALUATION_DIR")
 
     note_timeout_s: float = Field(180.0, alias="NOTE_TIMEOUT_S")
+    order_deadline_s: float = Field(120.0, alias="ORDER_DEADLINE_S")
     max_attempts: int = Field(6, alias="MAX_ATTEMPTS")
     max_note_steps: int = Field(8, alias="MAX_NOTE_STEPS")
     token_budget: int = Field(8000, alias="TOKEN_BUDGET")

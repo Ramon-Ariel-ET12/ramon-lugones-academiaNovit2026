@@ -14,9 +14,11 @@ from app.persistence.notes import NotesRepository
 from app.persistence.orders import OrdersRepository
 from app.persistence.queue import QueueRepository
 from app.persistence.rag import RagRepository
+from app.persistence.vision import PhotoQueueRepository
 
 
-class Repository(NotesRepository, EventsRepository, OrdersRepository, QueueRepository, RagRepository):
+class Repository(NotesRepository, EventsRepository, OrdersRepository, QueueRepository, RagRepository,
+                 PhotoQueueRepository):
     async def console_state(self) -> dict[str, Any]:
         """Everything the operator console shows, in one round of queries."""
         notes = await self.db.fetch(
@@ -28,10 +30,18 @@ class Repository(NotesRepository, EventsRepository, OrdersRepository, QueueRepos
         orders = await self.db.fetch(
             "SELECT id, equipment, state, tasks, payload FROM orders ORDER BY updated_at DESC LIMIT 15"
         )
+        # Orders a human still has to decide, with the analysis that justifies them.
+        review = await self.db.fetch(
+            """SELECT o.id, o.equipment, o.state, o.tasks, o.payload, a.causes, a.correlation_id
+               FROM orders o LEFT JOIN order_analysis a ON a.order_id = o.id
+               WHERE o.state IN ('PendienteAprobacion', 'Aprobada', 'Ejecutada', 'Observada')
+               ORDER BY o.updated_at DESC LIMIT 10"""
+        )
         return {
             "notes": notes,
             "events": events,
             "orders": orders,
+            "review_orders": review,
             "pending_sync": await self.pending_count(),
             "usage": await self.usage_summary(),
             "rag_chunks": await self.rag_count(),

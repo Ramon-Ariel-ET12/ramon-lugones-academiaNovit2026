@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Official correction for the first deliverable.
+# Official correction for the deliverables. Default: the Anexo 2 scenarios.
 #   scripts/evaluar.sh [escenario ...]
 set -euo pipefail
 
@@ -10,7 +10,7 @@ ALUMNO="${ALUMNO:-Ramón Ariel}"
 if [ "$#" -gt 0 ]; then
     ESCENARIOS=("$@")
 else
-    ESCENARIOS=(martes-tranquilo fuga-sin-enlace)
+    ESCENARIOS=(tormenta-perfecta sin-luz contratista fuga-sin-enlace)
 fi
 
 cd "$ROOT"

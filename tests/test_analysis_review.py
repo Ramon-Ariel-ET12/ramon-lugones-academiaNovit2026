@@ -1,0 +1,69 @@
+"""The reviewer step: citations and spare parts (Entrega 2)."""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+from app.analysis.models import Cause
+from app.analysis.review import CorpusCitations, citations_of, review
+
+CORPUS = Path(__file__).resolve().parent.parent / "academia2026-tp" / "datos" / "documentos" / "fragmentos.jsonl"
+
+
+def cause(title: str = "Válvulas gastadas", citation: str | None = "MBP-4 §6.4") -> Cause:
+    return Cause(code="F02", title=title, citation=citation, task_code="T-B-VAL", stops_equipment=True)
+
+
+def test_a_clean_analysis_passes(materials):
+    findings = review("B-101", [cause()], [{"codigo": "TX-VAL-KIT", "cantidad": 1}],
+                      materials, CorpusCitations.bundled(CORPUS))
+    assert findings == []
+
+
+def test_an_invented_citation_blocks(materials):
+    findings = review("B-101", [cause(citation="MBP-9 §1.1")], [], materials,
+                      CorpusCitations.bundled(CORPUS))
+    assert [f.kind for f in findings] == ["citation_missing"]
+    assert "MBP-9 §1.1" in findings[0].detail
+
+
+def test_a_superseded_manual_blocks(materials):
+    """TX350-C is the expired revision; TX350-D is the current one, same section."""
+    citations = CorpusCitations.bundled(CORPUS)
+    assert citations.knows("TX350-C §3.2") and not citations.is_current("TX350-C §3.2")
+    assert citations.is_current("TX350-D §3.2")
+    findings = review("B-101", [cause(citation="TX350-C §3.2")], [], materials, citations)
+    assert [f.kind for f in findings] == ["citation_expired"]
+
+
+def test_a_cause_without_a_citation_blocks(materials):
+    findings = review("B-101", [cause(citation=None)], [], materials,
+                      CorpusCitations.bundled(CORPUS))
+    assert [f.kind for f in findings] == ["citation_missing"]
+
+
+def test_a_part_outside_the_bill_of_materials_blocks(materials):
+    # A pump seal kit has no place in a filter's bill of materials.
+    findings = review("F-201B", [cause()], [{"codigo": "TX-SELLO-CAR", "cantidad": 1}],
+                      materials, CorpusCitations.bundled(CORPUS))
+    assert [f.kind for f in findings] == ["part_not_in_bom"]
+
+
+def test_no_stock_in_the_yacimiento_is_reported_but_not_hidden(materials):
+    # The rodamiento set is in the pump's BOM but the yacimiento has none: the order can
+    # exist, it just cannot be approved without a human (that is the sin-luz case).
+    findings = review("B-102", [cause()], [{"codigo": "TX-ROD-CIG", "cantidad": 1}], materials,
+                      CorpusCitations.bundled(CORPUS))
+    assert [f.kind for f in findings] == ["part_no_stock"]
+    assert materials.parts["TX-ROD-CIG"].stock == {"yacimiento": 0.0, "central": 2.0}
+
+
+def test_an_analysis_without_causes_blocks(materials):
+    findings = review("B-101", [], [], materials, CorpusCitations.bundled(CORPUS))
+    assert [f.kind for f in findings] == ["empty_causes"]
+
+
+def test_citations_are_deduplicated_in_order():
+    causes = [cause(citation="MBP-4 §6.4"), cause(citation="MBP-4 §7.1"),
+              cause(citation="MBP-4 §6.4")]
+    assert citations_of(causes) == ["MBP-4 §6.4", "MBP-4 §7.1"]
