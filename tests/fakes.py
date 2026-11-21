@@ -48,6 +48,14 @@ class FakeRepository:
         self.orders: dict[str, dict] = {}
         self.published_orders: list[dict] = []
         self.upserted: list[tuple[str, str]] = []
+        self.created: set[str] = set()
+        self.queued: list[str] = []
+
+    async def create_note(self, note_id, ts, operator, walk_id, audio_url, photos, live):
+        if note_id in self.created:
+            return False
+        self.created.add(note_id)
+        return True
 
     async def get_part(self, note_id):
         return None
@@ -62,6 +70,9 @@ class FakeRepository:
         self.parts.append({"note_id": note_id, "status": status, "rows": rows, "safety": safety})
 
     async def add_tablet_message(self, message_id, note_id, ts, kind, payload):
+        # Idempotent by id, like the real insert (ON CONFLICT DO NOTHING RETURNING id).
+        if message_id in self.tablet:
+            return False
         self.tablet.append(message_id)
         return True
 

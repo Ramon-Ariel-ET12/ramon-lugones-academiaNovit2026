@@ -30,7 +30,8 @@ class TabletChannel:
 
     async def send(self, note: NotaRecorrida, message_id: str, text: str, *,
                    rows: list[ExtractedRow] | None = None, options: list[str] | None = None,
-                   waits: bool = True, kind: str = "draft") -> None:
+                   waits: bool = True, kind: str = "draft") -> bool:
+        """Send one tablet message. Returns False when it had already been sent."""
         pantalla: dict | None = None
         if options is not None:
             pantalla = {"titulo": "Pregunta", "filas": [], "opciones": options}
@@ -45,8 +46,10 @@ class TabletChannel:
             "espera_respuesta": waits,
             "audio_url": None,
         }
-        await self.repo.add_tablet_message(message_id, note.id, note.ts, kind, payload)
-        await self.publisher.publish("sistema/tablet", payload, sync=False)
+        created = await self.repo.add_tablet_message(message_id, note.id, note.ts, kind, payload)
+        if created:
+            await self.publisher.publish("sistema/tablet", payload, sync=False)
+        return bool(created)
 
     async def deliver(self, payload: dict) -> None:
         """Store the operator's answer and wake the dialog waiting for it."""

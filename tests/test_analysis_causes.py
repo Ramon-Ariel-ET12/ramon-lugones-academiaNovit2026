@@ -186,3 +186,14 @@ def test_vibration_with_rising_oil_ranks_the_bearing_first(materials):
     causes = rank_causes("B-101", symptoms, {"presion_descarga": {"n": 40, "osc": 0.2}})
     assert causes[0].code == "F03"
     assert tasks_for(causes, "B-101", materials) == ["T-B-ROD"]
+
+
+def test_a_escalation_outside_the_window_still_produces_evidence(snapshot):
+    """The detector escalated: the deviation existed even if the 6h window no longer shows it."""
+    cool_trend = {"presion_diferencial": {"n": 40, "min": 0.2, "max": 0.4, "last": 0.3, "osc": 0.01,
+                                          "unit": "kg/cm2"}}
+    symptoms = detect_symptoms("F-201B", [], "presion_diferencial", cool_trend, snapshot)
+    assert [symptom.name for symptom in symptoms] == ["diferencial_alto"]
+    assert symptoms[0].source == "sensor"
+    causes = rank_causes("F-201B", symptoms, cool_trend)
+    assert causes[0].code == "F07"

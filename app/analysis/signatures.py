@@ -117,9 +117,10 @@ def detect_symptoms(equipment: str, rows: list[ExtractedRow], sensor_variable: s
         symptoms.extend(_row_symptoms(row, snapshot))
     if trend:
         symptoms.extend(_trend_symptoms(equipment, trend, snapshot))
-    elif sensor_variable:
-        # The detector escalated on this sensor, but the trend could not be fetched: the
-        # deviation is real (the plant published it), only the numbers are missing.
+    if sensor_variable and not any(symptom.source == "sensor" for symptom in symptoms):
+        # The detector escalated on this sensor, so the deviation was sustained: the
+        # historian window may already have moved past it (or be unavailable after a
+        # restart). Trusting only the window would leave the escalation with no evidence.
         name = SENSOR_SYMPTOMS.get(sensor_variable)
         if name is not None:
             symptoms.append(Symptom(name=name, tag=equipment, source="sensor",

@@ -91,6 +91,12 @@ class NoteWorkflow:
         if not created:
             log.info("duplicate note %s ignored", note.id)
             return
+        if not note.id.startswith("VIVO-"):
+            # The operator gets an answer the moment the note arrives: the tablet message
+            # is idempotent, so the worker will not repeat it, and the note stays visible
+            # even while the previous one is still being transcribed.
+            await self.tablet.send(note, f"TAB-{note.id}-processing",
+                                   "Nota recibida. Procesando el parte...", waits=False, kind="notice")
         await self.queue.put(note)
 
     async def _queue_row(self, row: dict) -> None:

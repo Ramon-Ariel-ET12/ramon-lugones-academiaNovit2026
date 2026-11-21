@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     heartbeat_seconds: float = Field(30.0, alias="HEARTBEAT_SECONDS")
     sync_batch_size: int = Field(50, alias="SYNC_BATCH_SIZE")
     sync_poll_seconds: float = Field(5.0, alias="SYNC_POLL_SECONDS")
-    link_poll_seconds: float = Field(10.0, alias="LINK_POLL_SECONDS")
+    link_poll_seconds: float = Field(2.0, alias="LINK_POLL_SECONDS")
     ui_port: int = Field(8200, alias="UI_PORT")
     log_level: str = Field("INFO", alias="LOG_LEVEL")
 

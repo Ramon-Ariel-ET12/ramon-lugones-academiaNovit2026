@@ -276,3 +276,18 @@ async def test_escalated_event_context_stores_the_manual_citations(snapshot, mat
 
     assert stored["sections"][0]["citation"] == "TX350-D §3.2"
     assert stored["sensor_trend"]["presion_descarga"]["last"] == 112.0
+
+
+async def test_the_operator_hears_about_the_note_before_it_is_transcribed(snapshot, materials):
+    """The processing notice is sent on arrival, and only once."""
+    wf, repo, _publisher = make_workflow("La uno está en 112 kilos de descarga.", snapshot, materials)
+    from app.contract import NotaRecorrida
+
+    payload = {"id": "NOTA-X", "ts": "2026-11-03T08:00:00-03:00", "operador": "Héctor",
+               "audio_url": None, "fotos": [], "recorrida_id": "R1"}
+    note = NotaRecorrida.model_validate(payload)
+    await wf.enqueue(payload)
+    assert "TAB-NOTA-X-processing" in repo.tablet
+    await wf.tablet.send(note, "TAB-NOTA-X-processing", "Nota recibida. Procesando el parte...",
+                         waits=False, kind="notice")
+    assert repo.tablet.count("TAB-NOTA-X-processing") == 1
