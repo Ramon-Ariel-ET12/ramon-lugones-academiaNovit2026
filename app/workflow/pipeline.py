@@ -52,9 +52,12 @@ class OrderPipeline:
     async def evidence(self, event: dict, rows: list[ExtractedRow], photos: list[str]) -> dict:
         """The evidence for an escalated event, under the order's real-time budget."""
         try:
+            # No manual search here: the cause engine cites MBP-4 §6/§7 from its own table,
+            # and the vector query would load the embedding model (seconds of CPU) exactly
+            # while the note worker is transcribing. The narrated sections still go to the
+            # event context through the enrichment task.
             return await asyncio.wait_for(
-                build_event_context(event, rows, photos, self.plant, self.search, self.snapshot,
-                                    self.materials),
+                build_event_context(event, rows, photos, self.plant, None, self.snapshot, self.materials),
                 timeout=self.settings.order_deadline_s,
             )
         except TimeoutError:

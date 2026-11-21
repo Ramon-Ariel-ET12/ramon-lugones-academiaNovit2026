@@ -173,3 +173,22 @@ async def test_an_equipment_without_a_task_gets_no_order(snapshot, materials, ci
                              plant_state=PlantState(), link_ok=True)
     assert result is None
     assert publisher.messages == []
+
+
+async def test_the_order_does_not_run_the_vector_search(snapshot, materials, citations):
+    """The causes cite MBP-4 themselves; a vector query here would load the embedder."""
+    calls: list[str] = []
+
+    class Search:
+        async def search(self, query, k=8):
+            calls.append(query)
+            return [{"citation": "MBP-4 §7.1"}]
+
+    repo, publisher = fakes.FakeRepository(), fakes.FakePublisher()
+    built = OrderPipeline(Settings(), repo, fakes.FakePlant(), publisher, snapshot, materials,  # type: ignore[arg-type]
+                          citations, Search())  # type: ignore[arg-type]
+    await built.run(escalated("B-101"),
+                    rows=[row("B-101", "goteo_empaquetadura", observation="goteo")], photos=[],
+                    sensor_variable=None,
+                    plant_state=PlantState(pumps={"B-101": "marcha", "B-103": "parada"}), link_ok=True)
+    assert calls == []

@@ -111,6 +111,9 @@ async def ensure_index(repo: Repository, plant: PlantClient, settings: Settings)
         # Text and embeddings are already there. Refresh the metadata a newer indexer
         # can derive (equipment/manufacturer for order histories) without re-embedding.
         await repo.rag_refresh_metadata(chunks)
+        # Load the model now, in the background: the first real query must not pay for it
+        # while a note is being transcribed.
+        await asyncio.to_thread(Embedder(settings.embedding_model).query, "calentamiento")
         return count
     embedder = Embedder(settings.embedding_model)
     texts = [f"{chunk['title']}\n{chunk['text']}" for chunk in chunks]
