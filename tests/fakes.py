@@ -14,8 +14,9 @@ class FakePlant:
     """Plant HTTP client double: plant clock, historian samples and order history."""
 
     def __init__(self, *, samples: list[float] | None = None, orders: list[dict] | None = None,
-                 state: dict | None = None) -> None:
+                 state: dict | None = None, by_variable: dict[str, list[float]] | None = None) -> None:
         self.samples = [112.0, 113.0] if samples is None else samples
+        self.by_variable = by_variable or {}
         self.orders = orders or []
         self.state_payload = dict(STATE if state is None else state)
         self.historian_calls: list[tuple[str, str]] = []
@@ -25,7 +26,8 @@ class FakePlant:
 
     async def historian(self, tag: str, variable: str, desde=None, hasta=None) -> list[dict]:
         self.historian_calls.append((tag, variable))
-        return [{"ts": "2026-11-03T08:00:00-03:00", "valor": float(value)} for value in self.samples]
+        values = self.by_variable.get(variable, self.samples)
+        return [{"ts": "2026-11-03T08:00:00-03:00", "valor": float(value)} for value in values]
 
     async def order_history(self, equipo=None) -> list[dict]:
         return self.orders
@@ -42,6 +44,10 @@ class FakeRepository:
         self.replies: list[dict] = []
         self.attempts: list[dict] = []
         self.usage: list[dict] = []
+        self.analysis: dict[str, dict] = {}
+        self.orders: dict[str, dict] = {}
+        self.published_orders: list[dict] = []
+        self.upserted: list[tuple[str, str]] = []
 
     async def get_part(self, note_id):
         return None
@@ -85,8 +91,21 @@ class FakeRepository:
     async def open_order(self, equipment, tasks):
         return None
 
-    async def upsert_order(self, *args):
-        return None
+    async def orders_by_id(self, order_id):
+        return self.orders.get(order_id) if hasattr(self, "orders") else None
+
+    async def save_analysis(self, order_id, analysis, *, correlation_id=None, citations=None, review=None):
+        self.analysis[order_id] = {"order_id": order_id, "causes": analysis.get("causes", analysis),
+                                   "correlation_id": correlation_id, "citations": citations or [],
+                                   "review": review or {}}
+
+    async def get_analysis(self, order_id):
+        return self.analysis.get(order_id)
+
+    async def upsert_order(self, order_id, equipment, tasks, state, payload):
+        self.orders[order_id] = {"id": order_id, "equipment": equipment, "tasks": tasks,
+                                 "state": state, "payload": payload}
+        self.upserted.append((order_id, state))
 
     async def record_decision(self, *args):
         return None

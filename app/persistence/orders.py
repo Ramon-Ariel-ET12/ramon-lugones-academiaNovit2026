@@ -60,12 +60,14 @@ class OrdersRepository(DbRepository):
 
     async def save_analysis(self, order_id: str, analysis: dict, *, correlation_id: str | None = None,
                             citations: list[str] | None = None, review: dict | None = None) -> None:
+        """The analysis behind an order: causes, citations and the reviewer's findings."""
         await self.db.execute(
             """INSERT INTO order_analysis (order_id, correlation_id, causes, citations, review)
                VALUES (%s, %s, %s, %s, %s)
                ON CONFLICT (order_id) DO UPDATE SET correlation_id = EXCLUDED.correlation_id,
                  causes = EXCLUDED.causes, citations = EXCLUDED.citations, review = EXCLUDED.review""",
-            (order_id, correlation_id, Jsonb(analysis), Jsonb(citations or []), Jsonb(review or {})),
+            (order_id, correlation_id, Jsonb(analysis.get("causes", analysis)), Jsonb(citations or []),
+             Jsonb(review or {})),
         )
 
     async def get_analysis(self, order_id: str) -> dict | None:

@@ -80,3 +80,14 @@ class RagRepository(DbRepository):
                    WHERE id = %s""",
                 rows,
             )
+
+    async def rag_citations(self) -> list[dict]:
+        """Every citation with its revision flag: what the reviewer needs to verify one."""
+        return await self.db.fetch("SELECT citation, current FROM rag_chunks")
+
+    async def rag_texts(self, doc: str) -> list[dict]:
+        """The indexed text of one document, in section order (used to read the contract)."""
+        return await self.db.fetch(
+            "SELECT citation, section_key, text FROM rag_chunks WHERE doc = %s ORDER BY citation",
+            (doc,),
+        )

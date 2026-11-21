@@ -14,22 +14,25 @@ from pathlib import Path
 from app.agent import NoteAgent
 from app.config import Settings
 from app.contract import NotaCierre, NotaRecorrida
+from app.domain.billing import PriceList
 from app.domain.events import ESCALADO, note_events
 from app.domain.history import HistoricalValidator
 from app.domain.materials import Materials
 from app.domain.models import Ambiguity, ExtractedRow, PartDraft, PlantSnapshot
-from app.domain.orders import make_proposal, order_id, order_payload, propose_tasks
 from app.domain.parser import parse_transcript
-from app.domain.rules import Decision, PlantState
+from app.domain.rules import PlantState
 from app.domain.safety import detect_safety, emergency_text
 from app.integrations.plant_api import PlantClient
 from app.llm.local import LocalLLM
 from app.persistence.repository import Repository
 from app.processing.asr import Transcriber
+from app.processing.closure import compare, parse_closure
 from app.processing.replies import apply_corrections, is_correction, read_reply
 from app.processing.tablet import TabletChannel
 from app.publisher import Publisher
 from app.rag.context import build_event_context
+from app.vision.queue import PhotoAnalyser
+from app.workflow.pipeline import OrderPipeline
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +40,8 @@ log = logging.getLogger(__name__)
 class NoteWorkflow:
     def __init__(self, settings: Settings, repo: Repository, plant: PlantClient, publisher: Publisher,
                  snapshot: PlantSnapshot, materials: Materials, transcriber: Transcriber,
-                 llm: LocalLLM | None = None, search=None):
+                 llm: LocalLLM | None = None, search=None, pipeline: OrderPipeline | None = None,
+                 prices: PriceList | None = None, photos: PhotoAnalyser | None = None):
         self.settings = settings
         self.repo = repo
         self.plant = plant
@@ -47,6 +51,9 @@ class NoteWorkflow:
         self.transcriber = transcriber
         self.llm = llm
         self.search = search
+        self.pipeline = pipeline
+        self.prices = prices
+        self.photos = photos
         self.agent = NoteAgent(snapshot)
         self.history = HistoricalValidator(plant, snapshot)
         self.tablet = TabletChannel(repo, publisher)
@@ -150,6 +157,7 @@ class NoteWorkflow:
         await self._within(note, "photo download", self._download_photos(note, draft), deadline)
         await self._confirm_historical_range(note, draft, deadline)
 
+        await self._check_structural_damage(note, draft)
         valued = draft.valued_rows()
         if valued:
             draft, confirmed = await self._review_loop(note, draft, deadline)
@@ -158,6 +166,30 @@ class NoteWorkflow:
             await self._inform_only(note, draft)
             status = "confirmed"
         await self._finalize(note, draft, status)
+
+    async def _check_structural_damage(self, note: NotaRecorrida, draft: PartDraft) -> None:
+        """Ask the vision model about the photos and flag the equipment it sees damaged.
+
+        The photos were already archived on disk; the analysis never blocks the note (it is
+        queued when the link is down) and it never touches the safety alert path.
+        """
+        if self.photos is None or not draft.photos:
+            return
+        try:
+            verdicts = await asyncio.wait_for(self.photos.submit(note.id, list(draft.photos)),
+                                             timeout=self.settings.order_deadline_s)
+        except TimeoutError:
+            log.warning("note %s: photo analysis did not finish in %.0fs",
+                        note.id, self.settings.order_deadline_s)
+            return
+        except Exception:
+            log.warning("note %s: photo analysis failed", note.id, exc_info=True)
+            return
+        damaged = {verdict.photo for verdict in verdicts if verdict.structural_damage}
+        for row in draft.rows:
+            if row.photo and row.photo in damaged:
+                self.structural_damage.add(row.tag)
+                log.warning("note %s: structural damage seen on %s (%s)", note.id, row.tag, row.photo)
 
     async def _within(self, note: NotaRecorrida, label: str, coro, deadline: float, fallback=None):
         """Run one pipeline step under the note's remaining real-time budget.
@@ -181,40 +213,18 @@ class NoteWorkflow:
             return fallback
 
     async def _transcribe(self, note: NotaRecorrida) -> str:
-        if not note.audio_url:
-            return ""
-        try:
-            audio = await self.plant.download(note.audio_url)
-        except Exception as exc:  # noqa: BLE001
-            log.error("note %s audio download failed: %s", note.id, exc)
-            return ""
-        suffix = Path(note.audio_url).suffix or ".wav"
-        target = Path(tempfile.gettempdir()) / "pia-audio" / f"{note.id}{suffix}"
-        try:
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(audio)
-        except OSError:
-            log.exception("note %s audio could not be stored", note.id)
-            return ""
-        try:
-            loop = asyncio.get_running_loop()
-            alerted = self.alerted
+        loop = asyncio.get_running_loop()
+        alerted = self.alerted
 
-            def on_partial(text: str) -> None:
-                # Runs inside the ASR thread: hand the partial transcript back to the
-                # loop so the safety alert does not wait for the whole audio.
-                if not text.strip() or note.id in alerted:
-                    return
-                asyncio.run_coroutine_threadsafe(self._early_alert(note, text), loop)
+        def on_partial(text: str) -> None:
+            # Runs inside the ASR thread: hand the partial transcript back to the loop so
+            # the safety alert does not wait for the whole audio.
+            if not text.strip() or note.id in alerted:
+                return
+            asyncio.run_coroutine_threadsafe(self._early_alert(note, text), loop)
 
-            result = await asyncio.to_thread(self.transcriber.transcribe, target,
-                                             on_partial=on_partial)
-        except Exception:
-            log.exception("note %s transcription failed", note.id)
-            return ""
-        log.info("note %s transcribed in %sms: %s", note.id, result.latency_ms, result.text[:160])
-        await self._record_step("asr", result.latency_ms, model=result.model)
-        return result.text
+        return await self._transcribe_audio(note.id, note.audio_url, deadline=float("inf"),
+                                            on_partial=on_partial)
 
     async def _record_step(self, task: str, latency_ms: float, model: str = "deterministic",
                            cost_usd: float = 0.0) -> None:
@@ -544,7 +554,7 @@ class NoteWorkflow:
             context = self._event_context(draft, rows, photos, status=status)
             await self.repo.insert_event(event, context)
             if event["tipo"] == ESCALADO:
-                await self.maybe_order(event, rows=rows, sensor_variable=None)
+                await self.maybe_order(event, rows=rows, sensor_variable=None, photos=photos)
                 # The evidence (recent sensor trend, order history) is fetched after the
                 # event is published and stored, so a slow historian never delays the
                 # note or the MQTT dispatch loop.
@@ -586,35 +596,21 @@ class NoteWorkflow:
             log.error("plant state unavailable: %s", exc)
             return PlantState(pumps={}), False
 
-    async def maybe_order(self, event: dict, *, rows: list[ExtractedRow],
-                          sensor_variable: str | None) -> None:
+    async def maybe_order(self, event: dict, *, rows: list[ExtractedRow], sensor_variable: str | None,
+                          photos: list[str] | None = None) -> dict | None:
+        """Analyse the event and publish its order, or nothing when it does not need one."""
         equipment = event.get("equipo")
         if not equipment or equipment.startswith(("TK-", "FT-")):
-            return
-        tasks = propose_tasks(equipment, rows, sensor_variable)
-        if not tasks:
-            return
-        existing = await self.repo.open_order(equipment, tasks)
-        if existing:
-            log.info("order already open for %s %s: %s", equipment, tasks, existing["id"])
-            return
+            return None
+        if self.pipeline is None:
+            log.warning("no order pipeline configured: event %s on %s left without an order",
+                        event.get("id"), equipment)
+            return None
         state, ok = await self._plant_state()
-        proposal, decision = make_proposal(
-            equipment, tasks, self.materials, state,
-            structural_damage=equipment in self.structural_damage, forced_pending=not ok,
+        return await self.pipeline.run(
+            event, rows=rows, photos=list(photos or []), sensor_variable=sensor_variable,
+            plant_state=state, link_ok=ok, structural_damage=equipment in self.structural_damage,
         )
-        oid = order_id(equipment, tasks, event["id"])
-        now = datetime.now(UTC)
-        draft_state = Decision(approved=False)
-        borrador = order_payload(oid, now, "Borrador", proposal, draft_state, [event["id"]])
-        final = order_payload(oid, now, decision.state, proposal, decision, [event["id"]])
-        await self.publisher.publish("sistema/ordenes", borrador, sync=True)
-        await self.repo.upsert_order(oid, equipment, tasks, "Borrador", borrador)
-        log.info("order %s for %s %s -> %s (%s)", oid, equipment, tasks, decision.state,
-                 "; ".join(decision.reasons) or "reglas cumplidas")
-        await self.publisher.publish("sistema/ordenes", final, sync=True)
-        await self.repo.upsert_order(oid, equipment, tasks, decision.state, final)
-        await self.repo.record_decision(oid, decision.state, decision.reasons, state.model_dump())
 
     async def handle_sensor_event(self, event: dict, variable: str | None) -> None:
         await self.publisher.publish("sistema/eventos", event, sync=True)
@@ -623,7 +619,14 @@ class NoteWorkflow:
         await self.maybe_order(event, rows=[], sensor_variable=variable)
         self._spawn(self._enrich_event(event, [], [], context))
 
+    # ---------------------------------------------------------------- closure
+
     async def handle_closure(self, payload: dict) -> None:
+        """Read the technician's closure note, compare it and pass the order to `Ejecutada`.
+
+        The comparison never changes the order by itself: it produces the differences the
+        supervisor or the inspector will read, and the amount the contract allows.
+        """
         try:
             closure = NotaCierre.model_validate(payload)
         except Exception as exc:  # noqa: BLE001
@@ -633,10 +636,62 @@ class NoteWorkflow:
         if not row:
             log.warning("closure for unknown order %s", closure.orden_id)
             return
+        transcript = await self._transcribe_audio(f"CIERRE-{closure.orden_id}", closure.audio_url,
+                                                  deadline=time.monotonic() + self.settings.note_timeout_s)
+        parts = parse_closure(transcript, orden_id=closure.orden_id, tecnico=closure.tecnico,
+                              empresa=closure.empresa, materials=self.materials)
+        correlation = (await self.repo.get_analysis(closure.orden_id) or {}).get("correlation_id")
+        if self.prices is not None:
+            comparison = compare(dict(row["payload"]), parts, self.materials, self.prices,
+                                 started_at=(row["payload"].get("ts") or "")[:10])
+            await self.repo.save_closure(
+                closure.orden_id, closure.id, transcript, list(parts.parts_used),
+                [difference.model_dump() for difference in comparison.differences],
+                correlation_id=correlation, monto=comparison.monto_habilita_usd,
+            )
+            for difference in comparison.differences:
+                log.warning("closure %s: %s (%s)", closure.orden_id, difference.kind, difference.detail)
         payload_order = dict(row["payload"])
         payload_order["ts"] = datetime.now(UTC).isoformat()
         payload_order["estado"] = "Ejecutada"
         payload_order["motivo"] = None
         await self.publisher.publish("sistema/ordenes", payload_order, sync=True)
         await self.repo.upsert_order(closure.orden_id, row["equipment"], row["tasks"], "Ejecutada", payload_order)
-        log.info("order %s executed by %s", closure.orden_id, closure.tecnico)
+        log.info("order %s executed by %s (%s)", closure.orden_id, closure.tecnico, closure.empresa)
+
+    async def _transcribe_audio(self, nota_id: str, audio_url: str | None, deadline: float,
+                                on_partial=None) -> str:
+        """Download and transcribe one audio under the remaining budget (notes and closures)."""
+        if not audio_url or self.transcriber is None:
+            return ""
+        try:
+            audio = await self._within_url(nota_id, self.plant.download(audio_url), deadline)
+        except Exception as exc:  # noqa: BLE001
+            log.error("%s audio download failed: %s", nota_id, exc)
+            return ""
+        if not audio:
+            return ""
+        suffix = Path(audio_url).suffix or ".wav"
+        target = Path(tempfile.gettempdir()) / "pia-audio" / f"{nota_id}{suffix}"
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(audio)
+        except OSError:
+            log.exception("%s audio could not be stored", nota_id)
+            return ""
+        try:
+            result = await asyncio.to_thread(self.transcriber.transcribe, target, on_partial=on_partial)
+        except Exception:
+            log.exception("%s transcription failed", nota_id)
+            return ""
+        log.info("%s transcribed in %sms: %s", nota_id, result.latency_ms, result.text[:160])
+        await self._record_step("closure_asr" if nota_id.startswith("CIERRE-") else "asr",
+                                result.latency_ms, model=result.model)
+        return result.text
+
+    async def _within_url(self, label: str, coro, deadline: float):
+        budget = deadline - time.monotonic()
+        if budget <= 0:
+            coro.close() if hasattr(coro, "close") else None
+            return None
+        return await asyncio.wait_for(coro, timeout=budget)

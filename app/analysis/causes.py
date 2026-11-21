@@ -111,8 +111,8 @@ def _inspection(symptom_text: str, missing: list[str], citation: str, task: str 
     )
 
 
-def rank_causes(equipment: str, symptoms: list[Symptom],
-                trend: dict[str, dict] | None = None) -> list[Cause]:
+def rank_causes(equipment: str, symptoms: list[Symptom], trend: dict[str, dict] | None = None,
+                part_normal: bool = False) -> list[Cause]:
     """Order the probable causes. Existing citations only: the reviewer checks them."""
     causes: list[Cause] = []
     vibration = _has(symptoms, "vibracion_alta")
@@ -158,7 +158,13 @@ def rank_causes(equipment: str, symptoms: list[Symptom],
                              equipment=equipment))
 
     # Vibration: §7.1 is the differential table. The order depends on what else is there.
-    if vibration:
+    if vibration and part_normal and not (drip or belts or low_oil or hot_oil or suction):
+        # The operator walked the machine and saw nothing: the sensor is the suspect (F10).
+        causes.append(_cause("F10", confidence="alta",
+                             evidence=[*_details(symptoms, "vibracion_alta"), "la recorrida no encontró la vibración"],
+                             missing=["cruzar la lectura del sensor con el colector"],
+                             equipment=equipment))
+    elif vibration:
         if suction:
             causes.append(_cause("F09", confidence="media",
                                  evidence=_details(symptoms, "vibracion_alta", "presion_succion_baja"),

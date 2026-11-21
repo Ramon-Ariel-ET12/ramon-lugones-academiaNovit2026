@@ -78,6 +78,16 @@ class Analysis(StrictModel):
     history: list[str] = Field(default_factory=list)
 
     @property
+    def blocking_findings(self) -> list[ReviewFinding]:
+        """The findings that stop an order: an unbacked citation or an empty analysis.
+
+        A stock shortage is reported but does not block: the order is created and goes to
+        the planner as pending, which is exactly how the plant handles it.
+        """
+        return [finding for finding in self.findings
+                if finding.kind in ("citation_missing", "citation_expired", "empty_causes")]
+
+    @property
     def blocked(self) -> bool:
         """The reviewer refused to publish: no order may be derived from this analysis."""
-        return bool(self.findings)
+        return bool(self.blocking_findings)

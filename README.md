@@ -185,14 +185,95 @@ confirmación → parte **Confirmado** → eventos.
   Detecta en código, sin nube, y publica `AlertaSeguridad` + aviso de tablet
   (`espera_respuesta: false`) con el aviso por radio al supervisor.
 
-### Órdenes y reglas
+### Orquestación de la entrega 2
 
-La propuesta de tarea es determinista (evidencia → tarea). Se publica `Borrador` y
-después `Aprobada` o `PendienteAprobacion` con motivo. Las cinco reglas se aplican en
+El workflow es explícito: cada paso es una función, y solo dos pasos son "de agente"
+(un modelo decide algo). El resto es código determinista.
+
+```
+                       ┌──────────────────────── código determinista ────────────────────────┐
+planta/recorridas ──▶ ruteo ──▶ parte ──▶ transcripción (ASR local) ──▶ parser ──▶ tablet
+planta/sensores/#  ──▶ ruteo ──▶ sensor ──▶ detector de desvío sostenido ──┐
+planta/respuestas  ──▶ ruteo ──▶ respuesta ──▶ lector de respuestas ──┐    │
+planta/cierres     ──▶ ruteo ──▶ cierre ──▶ transcripción ──▶ parser ─┼──▶ comparación
+planta/energia     ──▶ ruteo ──▶ energía (solo registro)               │    │
+                                                                      ▼    ▼
+   evento Escalado ──▶ evidencia (parte + fotos + tendencia + historial, build_event_context)
+                     ──▶ síntomas (signatures) ──▶ causas citadas (MBP-4 §6/§7) ──▶ historial recurrente
+                     ──▶ revisor (cita existe y vigente · repuesto en la lista de materiales)
+                     ──▶ borrador (OrdenSistema) ──▶ reglas en código ──▶ Aprobada | Pendiente(motivo)
+                     └─────────────────────────────┐
+                                                   ▼
+        decisión humana (API/CLI/web) ──▶ Aprobada · Rechazada · Cerrada · Certificada · Observada
+                                                   │
+planta/cierres ──▶ cierre comparado con la orden ──┘   (el monto del habilita sale del contrato)
+```
+
+**Qué decide el agente y qué no.** El modelo de lenguaje opcional (apagado por defecto)
+solo interpreta respuestas libres del operador y frases de causas; nunca elige la tarea,
+nunca aprueba y nunca toca la seguridad. Las tareas salen de la tabla de fallas del manual
+y de la lista de materiales; la aprobación sale de las cinco reglas.
+
+**Ruteo.** `app/workflow/router.py` clasifica cada tópico (`parte`, `sensor`, `respuesta`,
+`cierre`, `energía`). La seguridad no es un tópico aparte: el detector local decide si un
+parte va por la ruta de seguridad antes de cualquier modelo o red.
+
+**Paso revisor.** Antes de publicar una orden, `app/analysis/review.py` verifica que cada
+cita exista y esté vigente en el índice y que cada repuesto esté en la lista de materiales;
+si no, la orden no se publica. El stock faltante se informa (la orden nace pendiente) pero
+no bloquea.
+
+**Análisis citado.** `app/analysis/` convierte la evidencia en causas ordenadas, cada una
+con su cita del manual (matriz de firmas §6.2, tablas diferenciales §7.x), su evidencia y
+lo que falta para confirmarla. Si la evidencia no alcanza, la acción es una inspección
+(`I-VIB`/`I-VAL`). El historial de órdenes repetidas cambia la causa probable (los cinco
+casos del anexo: acople, émbolo rayado, cartucho roto aguas arriba, filtro primario,
+retén del piñón). F09 no ordena una bomba: la causa raíz está en la succión. F10 no exige
+orden.
+
+### Órdenes, reglas y decisión humana
+
+La propuesta de tarea es determinista (evidencia → análisis → tarea). Se publica `Borrador`
+y después `Aprobada` o `PendienteAprobacion` con motivo. Las cinco reglas se aplican en
 código contra el estado de bombas al decidir: tarea estándar, inyección mantenida,
 stock en el yacimiento, costo < USD 2.500, personal propio. Daño estructural en foto o
 estado de planta desconocido → pendiente. No hay aprobación por texto de una nota,
 historial o manual.
+
+El contrato no trae canal para las decisiones humanas, así que la interfaz es propia:
+
+| Rol | Acción | Desde → hacia |
+|---|---|---|
+| Planificador | aprobar / rechazar | `PendienteAprobacion` → `Aprobada` / `Rechazada` |
+| Supervisor | cerrar | `Ejecutada` → `Cerrada` |
+| Inspector | certificar / observar | `Ejecutada` → `Certificada` / `Observada` |
+
+- API: `GET /api/orders`, `GET /api/orders/{id}` (orden + análisis + cierre + decisiones),
+  `POST /api/orders/{id}/decision`.
+- CLI: `python scripts/orden.py pendientes | ver | aprobar | rechazar | cerrar | certificar | observar`.
+- Web: la consola (`/`) lista las órdenes para decidir con sus causas, citas y diferencias.
+- Cada decisión se registra con actor, rol, motivo y `correlation_id`; el estado se
+  publica validado contra `OrdenSistema`. Una orden pendiente sobrevive al corte de luz
+  con el mismo id y estado, y no se duplica.
+
+### Cierre y certificación
+
+`planta/cierres` se transcribe y se arma el parte de cierre (tareas hechas, repuestos
+usados, horas y prueba final). Se compara contra la orden y se marca cada diferencia
+(tarea faltante/extra, repuesto faltante/extra, cantidad, horas, prueba, precio); la orden
+pasa a `Ejecutada`. El monto del habilita sale de la orden y de la lista de precios de
+`CT-SVP-2025` leída del contrato (`app/domain/billing.py`), nunca de lo que declara el
+cierre, y se valida contra `cierres_ejemplo.json` en los tests (12 cierres: movilización
+mal cobrada, horas de más, repuesto extra, lista vieja).
+
+### Fotos y visión (multimodal)
+
+Con `VISION_ENABLED=true` y `NVIDIA_API_KEY`, las fotos se analizan con un modelo de
+visión de NVIDIA (API compatible con OpenAI, a través del proxy del enlace) y el veredicto
+se guarda en `photo_analysis`. Detecta daño estructural y el tipo de foto (empaquetadura,
+correas, acople, manómetro, filtro). Sin enlace o sin clave, la foto queda en cola y se
+analiza cuando vuelve; la alerta de seguridad nunca depende de este paso, y un análisis
+fallido nunca se lee como "sin daño".
 
 ### Herramientas y MCP
 
@@ -221,8 +302,8 @@ Tests: `tests/test_tools.py` y `tests/test_mcp.py`.
   (`events.context.sections`, visible en el panel como "fuentes: TX350-D §3.2").
 - Límites y stock **no** salen del RAG: vienen de la API y de los datos estructurados
   (la regla completa está en [`docs/MEMORIA.md`](docs/MEMORIA.md)).
-- Context builder para el análisis: `app/rag/context.py` (el análisis completo es de
-  la Entrega 2).
+- Context builder para el análisis: `app/rag/context.py`; sobre eso trabaja
+  `app/analysis/` (síntomas, causas citadas, historial recurrente y revisor).
 - Códigos de fabricante traducidos a F01–F10 con la tabla del MBP-4 §6
   (`app/rag/codes.py`).
 
@@ -325,8 +406,11 @@ Todo el proceso, en el orden correcto y con la evidencia en `var/audit/verificac
   están en [`INFORME.md`](INFORME.md) y son configurables.
 - La extracción del parte es determinista por diseño (hardware y reproducibilidad);
   el LLM local es opcional y solo interpreta respuestas libres. No decide reglas.
-- La central de aprobación/certificación (G2/G3) corresponde a la Entrega 2: el
-  contrato no tiene un canal de decisiones humanas.
+- La aprobación y la certificación humanas no vienen en el contrato: la interfaz es
+  propia (API + CLI + consola). G2/G3 están desactivadas en la rúbrica y se revisan a
+  mano, con el detalle del cierre y del monto en `GET /api/orders/{id}`.
+- La visión requiere clave de NVIDIA; sin ella (o sin enlace) la foto queda en cola y el
+  pipeline sigue igual.
 - Las notas con solo observaciones (sin filas numéricas) no se pueden confirmar por
   comparación de valores; se muestran y se confirman al recibir la respuesta.
 - El ASR y los embeddings requieren descargar modelos en el build; en runtime no hay

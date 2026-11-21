@@ -32,6 +32,58 @@ def _sources(context) -> str:
     return f" <small>· fuentes: {html.escape(', '.join(citations))}</small>"
 
 
+def _causes(row: dict) -> str:
+    causes = row.get("causes") or []
+    if not causes:
+        return "<small>sin análisis registrado</small>"
+    items = "".join(
+        f"<li>{html.escape(str(cause.get('title') or ''))} "
+        f"<small>({html.escape(str(cause.get('code') or '—'))}, {html.escape(str(cause.get('confidence') or ''))}, "
+        f"{html.escape(str(cause.get('citation') or 'sin cita'))})</small></li>"
+        for cause in causes[:3]
+    )
+    return f"<ul>{items}</ul>"
+
+
+def _differences(row: dict) -> str:
+    differences = row.get("diferencias") or []
+    if not differences:
+        return ""
+    items = "".join(f"<li>{html.escape(str(difference.get('kind') or ''))}: "
+                    f"{html.escape(str(difference.get('detail') or ''))}</li>" for difference in differences)
+    amount = row.get("monto_habilita_usd")
+    extra = f" <small>· contrato: USD {amount:.0f}</small>" if amount is not None else ""
+    return f"<div><b>Diferencias del cierre</b>{extra}<ul>{items}</ul></div>"
+
+
+def _next_command(row: dict) -> str:
+    order_id = row["id"]
+    state = row.get("state")
+    if state == "PendienteAprobacion":
+        return f'aprobar {order_id} --actor "..."   ·   rechazar {order_id} --actor "..." --motivo "..."'
+    if state in ("Aprobada", "Ejecutada", "Observada"):
+        return (f'cerrar {order_id} --actor "..."   ·   certificar {order_id} --actor "..." '
+                f'--habilita HAB-AAAA-NNNN   ·   observar {order_id} --actor "..." --motivo "..."')
+    return ""
+
+
+def _review_section(data: dict) -> str:
+    rows = data.get("review_orders") or []
+    if not rows:
+        return ""
+    cards = []
+    for row in rows:
+        command = _next_command(row)
+        hint = (f'<p><code>python scripts/orden.py {html.escape(command)}</code></p>' if command else "")
+        cards.append(
+            f"<li><b>{_esc(row['id'])}</b> · {_esc(row['equipment'])} · <b>{_esc(row['state'])}</b> "
+            f"{_esc(row['tasks'])}"
+            f"{'<br><small>motivo: ' + _esc(row['payload'].get('motivo')) + '</small>' if row['payload'].get('motivo') else ''}"
+            f"{_causes(row)}{_differences(row)}{hint}</li>"
+        )
+    return f"<h2>Órdenes para decidir</h2><ul>{''.join(cards)}</ul>"
+
+
 def render_console(data: dict, *, system_name: str, link_up: bool) -> str:
     notes = "".join(
         f"<tr><td>{_esc(note['id'])}</td><td>{_esc(note['ts'])}</td>"
@@ -62,6 +114,7 @@ latencia {usage['latency']} ms</p>
 <th>Transcripción</th></tr>{notes}</table>
 <h2>Eventos</h2><ul>{events}</ul>
 <h2>Órdenes</h2><ul>{orders}</ul>
+{_review_section(data)}
 <p><a href="/api/state">JSON</a> · <a href="/health">salud</a></p></body></html>"""
 
 

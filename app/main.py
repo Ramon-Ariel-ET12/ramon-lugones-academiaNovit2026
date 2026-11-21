@@ -9,12 +9,17 @@ import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Annotated
 
 from fastapi import Depends, FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from app.analysis.review import CorpusCitations
+from app.api.decisions import configure as configure_orders
+from app.api.decisions import router as orders_router
 from app.config import Settings, get_settings
+from app.domain.billing import PriceList
 from app.domain.materials import load_materials
 from app.domain.plant import load_snapshot_file, snapshot_from_definition
 from app.domain.sensors import SensorDetector
@@ -30,6 +35,11 @@ from app.processing.asr import Transcriber
 from app.processing.workflow import NoteWorkflow
 from app.publisher import Publisher
 from app.ui.console import STARTING, render_console
+from app.vision.nvidia import NvidiaVision
+from app.vision.queue import PhotoAnalyser
+from app.workflow.decisions import OrderDecisionService
+from app.workflow.pipeline import OrderPipeline
+from app.workflow.router import route_topic, sensor_parts
 
 log = logging.getLogger(__name__)
 
@@ -47,6 +57,8 @@ class Context:
     transcriber: Transcriber
     workflow: NoteWorkflow
     detector: SensorDetector
+    pipeline: OrderPipeline | None = None
+    photos: PhotoAnalyser | None = None
     link_up: bool = True
     ready: bool = False
     tasks: list[asyncio.Task] = field(default_factory=list)
@@ -128,36 +140,61 @@ async def _sensor_digest(ctx_: Context, payload: dict) -> None:
 async def _dispatch_loop(ctx_: Context) -> None:
     async for topic, payload in ctx_.mqtt.messages():
         try:
-            if topic == "planta/recorridas":
+            route = route_topic(topic)
+            if route == "parte":
                 await ctx_.workflow.enqueue(payload)
-            elif topic == "planta/respuestas":
+            elif route == "respuesta":
                 await ctx_.workflow.on_reply(payload)
-            elif topic.startswith("planta/sensores/"):
-                tag = payload.get("tag")
-                variable = payload.get("variable")
-                if not tag or not variable:
-                    continue
-                stamp = datetime.fromisoformat(payload["ts"])
-                event, episode = ctx_.detector.feed(tag, variable, payload.get("valor"), stamp,
-                                                    payload.get("calidad", "buena"))
-                if episode is not None:
-                    # Persisted on the transition only: the episode id survives a restart.
-                    await ctx_.repo.set_sensor_event(tag, variable,
-                                                     episode["event_id"] if episode["active"] else None,
-                                                     episode["since"])
-                if event:
-                    await ctx_.workflow.handle_sensor_event(event, variable)
-                await _sensor_digest(ctx_, payload)
-            elif topic == "planta/cierres":
+            elif route == "sensor":
+                await _on_sensor_sample(ctx_, payload)
+            elif route == "cierre":
                 await ctx_.workflow.handle_closure(payload)
-            elif topic == "planta/energia":
+            elif route == "energia":
                 log.info("plant energy state: %s", payload.get("hay_energia"))
+            else:
+                log.warning("message on an unknown topic ignored: %s", topic)
         except Exception:
             log.exception("failed to handle %s", topic)
 
 
+async def _on_sensor_sample(ctx_: Context, payload: dict) -> None:
+    """Feed one sample to the detector and escalate the sustained deviation it reports."""
+    parts = sensor_parts(payload)
+    if parts is None:
+        return
+    tag, variable = parts
+    stamp = datetime.fromisoformat(payload["ts"])
+    event, episode = ctx_.detector.feed(tag, variable, payload.get("valor"), stamp,
+                                        payload.get("calidad", "buena"))
+    if episode is not None:
+        # Persisted on the transition only: the episode id survives a restart.
+        await ctx_.repo.set_sensor_event(tag, variable,
+                                         episode["event_id"] if episode["active"] else None,
+                                         episode["since"])
+    if event:
+        await ctx_.workflow.handle_sensor_event(event, variable)
+    await _sensor_digest(ctx_, payload)
+
+
+async def _photo_loop(ctx_: Context) -> None:
+    """Drain the photo queue: with the link down it simply retries on the next round."""
+    analyser = ctx_.photos
+    if analyser is None:
+        return
+    while True:
+        try:
+            done = await analyser.drain()
+            if done:
+                log.info("analysed %s queued photos", done)
+        except Exception:
+            log.warning("photo queue drain failed", exc_info=True)
+        await asyncio.sleep(max(10.0, ctx_.settings.sync_poll_seconds * 6))
+
+
 async def _rag_loop(ctx_: Context) -> None:
+    """Build the manual index once the plant corpus is reachable, retrying a few times."""
     from app.rag.indexer import ensure_index
+
 
     for _ in range(3):
         try:
@@ -167,6 +204,38 @@ async def _rag_loop(ctx_: Context) -> None:
         except Exception as exc:  # noqa: BLE001
             log.warning("rag indexing failed: %s", exc)
             await asyncio.sleep(20)
+
+
+async def _analysis_inputs(repo: Repository, settings: Settings) -> tuple[CorpusCitations, PriceList | None]:
+    """The citation index and the contract price list the analysis and the reviewer use.
+
+    Both come from the indexed corpus (the same text the retrieval uses); when the index
+    is empty they fall back to the bundled file so the pipeline still works on a cold DB.
+    """
+    rows = await repo.rag_citations()
+    citations = CorpusCitations(rows) if rows else CorpusCitations.from_settings(settings)
+    contract = await repo.rag_texts("CT-SVP-2025") if rows else []
+    prices = PriceList.from_chunks(contract) if contract else None
+    if prices is None or len(prices) == 0:
+        log.warning("CT-SVP-2025 price list not indexed yet: certification amounts unavailable")
+        prices = None
+    return citations, prices
+
+
+def _photo_analyser(settings: Settings, repo: Repository, plant: PlantClient) -> PhotoAnalyser | None:
+    vision = NvidiaVision(settings.vision_model, settings.vision_base_url, settings.vision_api_key,
+                          timeout=settings.vision_timeout_s)
+    if not (settings.vision_enabled and vision.enabled):
+        log.info("photo analysis disabled (VISION_ENABLED / NVIDIA_API_KEY)")
+        return None
+
+    async def load(photo: str) -> bytes:
+        path = Path(photo)
+        if path.exists():
+            return path.read_bytes()
+        return await plant.download(photo)
+
+    return PhotoAnalyser(repo, vision, load)
 
 
 @asynccontextmanager
@@ -195,8 +264,11 @@ async def lifespan(app: FastAPI):
     from app.rag.search import ManualSearch
 
     search = ManualSearch(repo, settings, snapshot)
+    citations, prices = await _analysis_inputs(repo, settings)
+    pipeline = OrderPipeline(settings, repo, plant, publisher, snapshot, materials, citations, search)
+    photos = _photo_analyser(settings, repo, plant)
     workflow = NoteWorkflow(settings, repo, plant, publisher, snapshot, materials, transcriber, llm,
-                            search=search)
+                            search=search, pipeline=pipeline, prices=prices, photos=photos)
     detector = SensorDetector(snapshot)
     # A restart in the middle of a sustained deviation must keep the same event id.
     try:
@@ -204,7 +276,7 @@ async def lifespan(app: FastAPI):
     except Exception:
         log.warning("sensor episodes could not be restored", exc_info=True)
     ctx = Context(settings, db, repo, plant, mqtt, publisher, materials, snapshot, transcriber,
-                  workflow, detector)
+                  workflow, detector, pipeline=pipeline, photos=photos)
     app.state.ctx = ctx
     publisher.pending_hook = lambda: _publish_heartbeat(ctx)
     await workflow.start()
@@ -213,7 +285,9 @@ async def lifespan(app: FastAPI):
         asyncio.create_task(_dispatch_loop(ctx), name="mqtt-dispatch"),
         asyncio.create_task(_monitor_loop(ctx), name="heartbeat"),
         asyncio.create_task(_sync_loop(ctx), name="sync"),
+        asyncio.create_task(_photo_loop(ctx), name="photos"),
     ]
+    configure_orders(OrderDecisionService(repo, publisher, prices=prices))
     ctx.ready = True
     # The correction waits for this first heartbeat before releasing the plant clock, so
     # it carries the link state as it is at startup, not the optimistic default.
@@ -239,6 +313,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="PIA-3 assistant", lifespan=lifespan)
+app.include_router(orders_router)
 
 
 @app.get("/health")

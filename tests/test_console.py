@@ -52,3 +52,23 @@ def test_endpoints_answer_before_the_context_exists():
     page = client.get("/")
     assert page.status_code == 200
     assert STARTING in page.text
+
+
+def test_the_console_shows_the_orders_a_human_has_to_decide():
+    data = {
+        **DATA,
+        "review_orders": [{
+            "id": "OT-1", "equipment": "B-101", "state": "PendienteAprobacion", "tasks": ["T-B-ROD"],
+            "payload": {"motivo": "requiere contratista (Servipat)", "estado": "PendienteAprobacion"},
+            "causes": [{"code": "F03", "title": "Rodamiento de cigüeñal dañado", "confidence": "alta",
+                        "citation": "MBP-4 §6.5"}],
+            "correlation_id": "E1", "diferencias": [{"kind": "horas", "detail": "declara 26,5 h"}],
+            "monto_habilita_usd": 1150.0,
+        }],
+    }
+    page = render_console(data, system_name="Planta", link_up=True)
+    assert "Órdenes para decidir" in page
+    assert "Rodamiento de cigüeñal dañado" in page and "MBP-4 §6.5" in page
+    assert "requiere contratista" in page
+    assert "declara 26,5 h" in page and "USD 1150" in page
+    assert "scripts/orden.py aprobar OT-1" in page

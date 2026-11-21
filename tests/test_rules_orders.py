@@ -100,3 +100,53 @@ def test_order_payload_shape(materials, ts):
     pending = order_payload("oid", ts, "PendienteAprobacion", proposal,
                             Decision(approved=False, reasons=["falta stock"]), ["e1"])
     assert pending["motivo"] == "falta stock"
+
+
+# ---------------------------------------------------------------- bordes del anexo 2
+
+
+def test_the_cost_limit_is_strictly_less_than_2500(materials):
+    """USD 2.499 is approved; USD 2.500 is not (the Anexo: costo menor a USD 2.500)."""
+    from app.domain.rules import MAX_PART_COST_USD, Proposal
+
+    class PricedMaterials:
+        """The real catalogue with one priced part, to hit the boundary exactly."""
+
+        def __init__(self, cost: float):
+            self._materials = materials
+            self._cost = cost
+
+        def __getattr__(self, name):
+            return getattr(self._materials, name)
+
+        def part_cost(self, code, quantity):
+            return self._cost * quantity
+
+    def proposal() -> Proposal:
+        return Proposal(equipment="B-101", tasks=["T-B-EMP"],
+                        parts=[{"codigo": "TX-EMP-KIT", "cantidad": 1}],
+                        executor="propio", stops_equipment=True)
+
+    assert MAX_PART_COST_USD == 2500.0
+    below = evaluate(proposal(), PricedMaterials(2499.0), state())  # type: ignore[arg-type]
+    assert below.approved, below.reasons
+
+    at_limit = evaluate(proposal(), PricedMaterials(2500.0), state())  # type: ignore[arg-type]
+    assert not at_limit.approved
+    assert any("costo" in reason for reason in at_limit.reasons)
+
+
+def test_the_valve_kit_is_under_the_limit_and_approved_when_the_reserve_is_idle(materials):
+    """T-B-VAL on a running pump that stops it: only approvable with the reserve running."""
+    proposal = build_proposal("B-102", ["T-B-VAL"], materials, state())
+    decision = evaluate(proposal, materials, state())
+    assert proposal.parts == [{"codigo": "TX-VAL-KIT", "cantidad": 1.0}]
+    assert materials.part_cost("TX-VAL-KIT", 1) == 1900.0
+    assert decision.approved, decision.reasons
+
+
+def test_the_crankshaft_bearing_kit_has_no_stock_in_the_yacimiento(materials):
+    proposal = build_proposal("B-101", ["T-B-ROD"], materials, state())
+    decision = evaluate(proposal, materials, state())
+    assert not decision.approved
+    assert any("contratista" in reason for reason in decision.reasons)
