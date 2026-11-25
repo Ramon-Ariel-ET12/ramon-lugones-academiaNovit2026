@@ -2,8 +2,8 @@
 
 ## Entrega 2 · los cuatro escenarios del Anexo 2
 
-Corrida oficial del **2026-11-21 02:37** (commit `bdd2976`) con los cuatro escenarios del
-anexo, sobre el `docker-compose.yml` del repo:
+Corrida oficial de cierre del **2026-11-25 00:08** (commit `21bcef8`) con los cuatro
+escenarios del anexo, sobre el `docker-compose.yml` del repo:
 
 ```bash
 ESCENARIOS="tormenta-perfecta sin-luz contratista fuga-sin-enlace" ./scripts/verificar.sh
@@ -16,24 +16,24 @@ uv run --with httpx --with pyyaml python academia2026-tp/correccion/corregir.py 
 Los artefactos quedan en `academia2026-tp/correccion/corridas/academiaNovit2026/`
 (`informe.md`, `resultado.json`, un JSON por escenario, los logs y `meta.json`).
 
-**91,2 / 100 · APRUEBA** (mínimo 60). **Sin faltas eliminatorias.**
+**89,4 / 100 · APRUEBA** (mínimo 60). **Sin faltas eliminatorias.**
 
 | Criterio | Peso | Valor | Puntos |
 |---|---:|---:|---:|
-| A1 Cobertura | 5 | 100 % | 5,00 |
-| A2 Borrador al primer intento | 10 | 75 % | 7,50 |
-| A3 Parte final correcto | 8 | 86 % | 6,89 |
+| A1 Cobertura | 5 | 93 % | 4,63 |
+| A2 Borrador al primer intento | 10 | 69 % | 6,91 |
+| A3 Parte final correcto | 8 | 73 % | 5,86 |
 | A4a Pregunta cuando hace falta | 4 | 100 % | 4,00 |
-| A4b No pregunta de más | 3 | 99 % | 2,96 |
-| B1 Sin novedad / Escalado | 10 | 97 % | 9,73 |
+| A4b No pregunta de más | 3 | 97 % | 2,91 |
+| B1 Sin novedad / Escalado | 10 | 93 % | 9,28 |
 | B2 Alerta de seguridad | 10 | 100 % | 10,00 |
 | D1 Reglas de aprobación | 15 | 100 % | 15,00 |
 | D2 Orden adecuada a la falla | 10 | 100 % | 10,00 |
 | E1 Sigue andando sin enlace | 3 | 50 % | 1,50 |
-| E2 Pendientes visibles | 3 | 75 % | 2,25 |
+| E2 Pendientes visibles | 3 | 100 % | 3,00 |
 | E3 Sin duplicados | 4 | 100 % | 4,00 |
 | F1 Mensajes válidos | 2 | 100 % | 2,00 |
-| F2 Latido | 1 | 99 % | 0,99 |
+| F2 Latido | 1 | 100 % | 1,00 |
 | F3 Sobrevive al corte de luz | 2 | **0 %** | 0,00 |
 | G1 Orden ejecutada | 3 | 100 % | 3,00 |
 | G2 Cierre propio | 2 | inactivo | – |
@@ -41,21 +41,28 @@ Los artefactos quedan en `academia2026-tp/correccion/corridas/academiaNovit2026/
 
 Detalle por escenario (de `resultado.json`):
 
-- **D1**: tormenta-perfecta 3 órdenes decididas, sin-luz 2, contratista 3; todas
+- **D1**: tormenta-perfecta 3 órdenes decididas, sin-luz 3, contratista 3; todas
   Aprobada o Pendiente según las cinco reglas, con motivo en las pendientes.
   `fuga-sin-enlace` no decidió órdenes.
 - **D2**: una falla por escenario, con orden sobre el equipo correcto — F02-B-102 en
   tormenta, F07-F-201B en sin-luz, F03-B-101 en contratista.
 - **G1**: un cierre en tormenta y otro en sin-luz (F-201A, `T-F-CAR`, trabajo propio);
   las dos órdenes pasaron a `Ejecutada`. La corrida de contratista no recibió cierres.
+- **E2** dio 100 %: el sistema avisó los pendientes durante los dos cortes y los dejó en
+  cero cuando volvió el enlace.
 - **F3**: el apagón de `sin-luz` cae cuando no había ninguna orden pendiente antes del
   corte, así que el criterio mide 0 por el guion, no por el sistema. La durabilidad se
   demuestra aparte con un corte controlado del contenedor (misma id y estado, sin
   duplicado) — ver [`VERIFICACION_ENTREGA_2.md`](VERIFICACION_ENTREGA_2.md).
-- **E1/E2**: en tormenta-perfecta el reloj de la planta corre a 1800× durante el corte y
+- **E1**: en tormenta-perfecta el reloj de la planta corre a 1800× durante el corte y
   las notas caen en segundos reales: la tablet no llega a responder dentro de la ventana.
-  En `fuga-sin-enlace` la nota del corte sí se respondió (1/1) y los pendientes se
-  avisaron.
+  En `fuga-sin-enlace` la nota del corte sí se respondió (1/1).
+
+**Variación entre corridas.** La misma suite dio **91,2** el 2026-11-21 (commit `bdd2976`)
+y **85,8** el 2026-11-25 antes del commit final, con los mismos D1/D2/G1 al 100 %. La
+diferencia está en A1/A2/A3/B1, que dependen de la voz que elige el simulador, del ASR
+local y de si el operador virtual alcanza a contestar antes del corte; los criterios
+deterministas (reglas, orden, cierre y mensajes) se mantuvieron estables.
 
 **Nota sobre el puntuador.** La copia local del corrector lleva un parche sin commitear en
 `correccion/puntuar.py`: cuando una orden `PendienteAprobacion` trae `motivo`, la expresión

@@ -81,8 +81,9 @@ curl -s -X POST localhost:8200/api/orders/OT-DEMO-CONTRATISTA/decision \
 
 curl -s localhost:8200/api/orders/OT-DEMO-CONTRATISTA
 # estado Certificada · habilita HAB-2026-0001 · monto_habilita_usd 780.0 (contrato)
-# diferencias: prueba ("el cierre no declara la prueba final"),
-#              precio ("declara USD 1300 y el contrato CT-SVP-2025 da USD 780 ...")
+# parte conservado del cierre del técnico: tecnico "Diego Barría", hours 5.0,
+#   test_result "probé a ciento diez kilos, sin pérdida"
+# diferencias: precio ("declara USD 1300 y el contrato CT-SVP-2025 da USD 780 ...")
 ```
 
 Controles negativos (devuelven 409 y no cambian la orden):
@@ -96,7 +97,7 @@ supervisor cierra trabajo de la contratista (Ejecutada):
 
 El monto de la habilita es el del contrato (USD 780), no el declarado (USD 1300), y la
 diferencia queda registrada en el cierre. La transcripción completa de la corrida está
-en `var/audit/entrega2/g2-g3.txt` (local).
+en `var/audit/entrega2/g2-g3-final.txt` (local).
 
 ## 6. Durabilidad: corte controlado (2026-11-25)
 
@@ -115,13 +116,13 @@ log:      "removed 1 order(s) left in Borrador"
 
 Esto cubre F3 (mismo ID, mismo estado, sin duplicado) con independencia de que el guion de
 `sin-luz` tenga o no una orden pendiente antes del apagón. Transcripción en
-`var/audit/entrega2/durabilidad.txt` (local).
+`var/audit/entrega2/durabilidad-final.txt` (local).
 
 ## 7. Cómo se verifica
 
 | # | Requisito | Estado | Evidencia |
 |---|---|---|---|
-| 27 | Escenarios `tormenta-perfecta`, `sin-luz`, `contratista`, `fuga-sin-enlace`; métricas D1, D2, F3, G1; eliminatoria `aprobacion_indebida` | MET | Corrida oficial de los cuatro escenarios: **91,2 / 100 · APRUEBA**, sin eliminatorias; D1/D2/G1 100 %. Detalle en `docs/RESULTADOS.md`. |
+| 27 | Escenarios `tormenta-perfecta`, `sin-luz`, `contratista`, `fuga-sin-enlace`; métricas D1, D2, F3, G1; eliminatoria `aprobacion_indebida` | MET | Corrida oficial de cierre (2026-11-25, commit `21bcef8`): **89,4 / 100 · APRUEBA**, sin eliminatorias; D1/D2/G1 100 %. Corridas anteriores de la misma suite: 91,2 y 85,8. Detalle en `docs/RESULTADOS.md`. |
 | 28 | Revisión manual G2/G3 | MET | §5 de este documento. |
 | 29 | `docker compose up` levanta el sistema; presupuesto 4 CPU / 8 GB | MET | `scripts/check_compose_budget.py`: 4/4 CPU y 7,375/8 GiB, red, label y proxies en regla; `docker compose config` válido. |
 | 30 | Repo público `nombre-apellido`, con `README.md`, `docker-compose.yml` y `tests/` | MET | `https://github.com/Ramon-Ariel-ET12/ramon-lugones-academiaNovit2026` (renombrado desde `ramon-ariel`); `master` con la Entrega 2 publicada. Nota: el enunciado pide `nombre-apellido` y el repo se llama `ramon-lugones-academiaNovit2026`; se documenta la desviación. |

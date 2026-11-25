@@ -407,10 +407,10 @@ Todo el proceso, en el orden correcto y con la evidencia en `var/audit/verificac
 
 ## Resultados medidos
 
-- **Entrega 2 (cuatro escenarios del anexo): 91,2 / 100 · APRUEBA** en la corrida del
-  **2026-11-21 02:37** (commit `bdd2976`) sobre `tormenta-perfecta`, `sin-luz`,
+- **Entrega 2 (cuatro escenarios del anexo): 89,4 / 100 · APRUEBA** en la corrida del
+  **2026-11-25 00:08** (commit `21bcef8`) sobre `tormenta-perfecta`, `sin-luz`,
   `contratista` y `fuga-sin-enlace`, sin faltas eliminatorias. D1 (reglas de aprobación),
-  D2 (orden adecuada) y G1 (orden ejecutada) dan 100 %; F3 y E1/E2 tienen techos de
+  D2 (orden adecuada) y G1 (orden ejecutada) dan 100 %; F3 y E1 tienen techos de
   guion explicados en [`docs/RESULTADOS.md`](docs/RESULTADOS.md). La matriz requisito por
   requisito y la demostración manual de G2/G3 están en
   [`docs/VERIFICACION_ENTREGA_2.md`](docs/VERIFICACION_ENTREGA_2.md).

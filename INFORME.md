@@ -179,9 +179,11 @@ En la nube el costo es 0: la visión usa el nivel gratuito de NVIDIA NIM y la r�
 
 ## 6. Conclusión
 
-La corrida oficial de la **Entrega 2** (commit `bdd2976`, 2026-11-21) sobre los cuatro
-escenarios del anexo —`tormenta-perfecta`, `sin-luz`, `contratista`, `fuga-sin-enlace`—
-obtuvo **91,2 / 100 (APRUEBA)**, sin faltas eliminatorias. D1 (reglas de aprobación),
+La corrida oficial de cierre de la **Entrega 2** (commit `21bcef8`, 2026-11-25) sobre los
+cuatro escenarios del anexo —`tormenta-perfecta`, `sin-luz`, `contratista`,
+`fuga-sin-enlace`— obtuvo **89,4 / 100 (APRUEBA)**, sin faltas eliminatorias. La misma
+suite había dado 91,2 el 2026-11-21; la diferencia está en A1/A2/B1, que dependen del ASR
+y de la voz del simulador, con D1/D2/G1 siempre al 100 %. D1 (reglas de aprobación),
 D2 (orden adecuada a la falla) y G1 (orden ejecutada) dieron 100 %; F3 (sobrevive al
 corte de luz) dio 0 % porque el apagón del escenario cae cuando no había ninguna orden
 pendiente que sobrevivir, y E1/E2 pierden la ventana del corte porque el reloj de la
