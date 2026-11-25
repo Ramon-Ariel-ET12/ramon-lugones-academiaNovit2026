@@ -1,5 +1,8 @@
 # Verificación del Anexo — Entrega 1
 
+> Snapshot de la Entrega 1 (2026-11-12). La matriz de la **Entrega 2** está en
+> [`VERIFICACION_ENTREGA_2.md`](VERIFICACION_ENTREGA_2.md).
+
 Cada fila corresponde a un requisito del **Anexo de entregas** (Entrega 1). La columna
 *Evidencia* apunta al código, al comando o al artefacto que lo demuestra; la columna
 *Estado* usa **MET**, **PARCIAL** o **NO**.

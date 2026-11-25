@@ -82,6 +82,15 @@ async def _load_snapshot(plant: PlantClient, settings: Settings):
 
 
 async def _resume_orders(ctx_: Context) -> None:
+    """Republish the open orders after a restart, with the id and state they had.
+
+    A ``Borrador`` is the one state that cannot be resumed: the row exists but the
+    decision that follows was never published, so it is removed instead of blocking the
+    re-draft of the same fault (the event is still persisted and analysed again).
+    """
+    drafts = await ctx_.repo.clear_draft_orders()
+    if drafts:
+        log.info("removed %s order(s) left in Borrador", drafts)
     for order in await ctx_.repo.open_orders():
         payload = dict(order["payload"])
         if payload.get("estado") == "Borrador":

@@ -7,18 +7,15 @@ section breaks the test instead of the reviewer.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 
 from app.analysis.causes import rank_causes, tasks_for
 from app.analysis.models import Symptom
 from app.analysis.signatures import detect_symptoms, part_is_normal
 from app.domain.models import ExtractedRow
 
-CORPUS = Path(__file__).resolve().parent.parent / "academia2026-tp" / "datos" / "documentos" / "fragmentos.jsonl"
 
-
-def citations_in_corpus() -> set[str]:
-    rows = [json.loads(line) for line in CORPUS.read_text(encoding="utf-8").splitlines() if line.strip()]
+def citations_in_corpus(corpus_path) -> set[str]:
+    rows = [json.loads(line) for line in corpus_path.read_text(encoding="utf-8").splitlines() if line.strip()]
     return {row["id"] for row in rows}
 
 
@@ -158,8 +155,8 @@ def test_a_drifting_sensor_does_not_produce_a_work_order(materials):
     assert causes == [] or tasks_for(causes, "B-101", materials) == []
 
 
-def test_every_citation_the_engine_uses_exists_in_the_corpus():
-    known = citations_in_corpus()
+def test_every_citation_the_engine_uses_exists_in_the_corpus(corpus_path):
+    known = citations_in_corpus(corpus_path)
     from app.analysis.causes import CITATION_OF, DIFFERENTIAL_CITATION
 
     for citation in list(CITATION_OF.values()) + list(DIFFERENTIAL_CITATION.values()):

@@ -39,9 +39,12 @@ TRANSITIONS: dict[str, dict[str, tuple[frozenset[str], str]]] = {
         "reject": (frozenset({"PendienteAprobacion"}), "Rechazada"),
     },
     "supervisor": {
-        "close": (frozenset({"Ejecutada", "Aprobada", "Cerrada"}), "Cerrada"),
+        # Own work is closed after the technician closed the order, not before.
+        "close": (frozenset({"Ejecutada"}), "Cerrada"),
     },
     "inspector": {
+        # Contractor work is certified (or observed) after the closure; an observed order
+        # can be certified once the contractor fixes what the inspector marked.
         "certify": (frozenset({"Ejecutada", "Observada"}), "Certificada"),
         "observe": (frozenset({"Ejecutada", "Observada"}), "Observada"),
     },
@@ -90,6 +93,11 @@ class OrderDecisionService:
         allowed_from, target = TRANSITIONS[role][action]
         if current not in allowed_from:
             raise DecisionError(f"{action} no aplica a una orden en estado {current}")
+        executor = str(payload.get("ejecutor") or "propio")
+        if role == "supervisor" and executor != "propio":
+            raise DecisionError("el cierre propio lo firma el supervisor; esta orden es de la contratista")
+        if role == "inspector" and executor == "propio":
+            raise DecisionError("la certificación es para trabajo de la contratista; esta orden es propia")
 
         if action == "observe" and not (motive or "").strip():
             raise DecisionError("observar una orden exige el motivo")
@@ -111,10 +119,14 @@ class OrderDecisionService:
             payload["monto_habilita_usd"] = None
 
         if comparison is not None:
+            # Keep the part the technician closed with (it has the technician and the
+            # workshop); the decision only refreshes the comparison and the amount.
+            stored = (await self.repo.get_closure(order_id) or {}).get("parte") or {}
             await self.repo.save_closure(
                 order_id, None, comparison.closure.transcript, list(comparison.closure.parts_used),
                 [difference.model_dump() for difference in comparison.differences],
                 monto=comparison.monto_habilita_usd,
+                parte=dict(stored) or comparison.closure.model_dump(),
             )
         published = await self.publisher.publish("sistema/ordenes", payload, sync=True)
         if not published:

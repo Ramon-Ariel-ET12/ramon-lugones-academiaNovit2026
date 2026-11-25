@@ -99,6 +99,13 @@ async def test_a_pending_order_is_republished_after_a_restart_and_a_draft_is_not
                 {"id": "OT-DRAFT", "payload": {"estado": "Borrador", "equipo": "B-101"}},
                 {"id": "OT-DONE", "payload": {"estado": "Certificada", "equipo": "B-101"}},
             ]
+            self.removed: list[str] = []
+
+        async def clear_draft_orders(self):
+            drafts = [order for order in self.open if order["payload"]["estado"] == "Borrador"]
+            self.removed = [order["id"] for order in drafts]
+            self.open = [order for order in self.open if order not in drafts]
+            return len(drafts)
 
         async def open_orders(self):
             return self.open
@@ -117,3 +124,33 @@ async def test_a_pending_order_is_republished_after_a_restart_and_a_draft_is_not
 
     await _resume_orders(Ctx())
     assert [state for _topic, state in Ctx.publisher.sent] == ["PendienteAprobacion", "Certificada"]
+    assert Ctx.repo.removed == ["OT-DRAFT"]
+    assert all(order["id"] != "OT-DRAFT" for order in Ctx.repo.open)
+
+
+def test_console_shows_the_closure_part_next_to_the_differences():
+    data = {**DATA, "review_orders": [{
+        "id": "O1", "equipment": "B-101", "state": "Ejecutada", "tasks": ["I-VIB"],
+        "payload": {"motivo": None}, "causes": [],
+        "parte": {"tasks_done": ["I-VIB"], "hours": 3.0,
+                  "test_result": "probé a ciento diez kilos, sin pérdida"},
+        "diferencias": [{"kind": "horas", "detail": "3 h sobre 2 incluidas"}],
+        "monto_habilita_usd": 320.0,
+    }]}
+    page = render_console(data, system_name="Planta", link_up=True)
+    assert "Parte de cierre" in page
+    assert "ciento diez kilos" in page
+    assert "horas" in page and "USD 320" in page
+
+
+def test_the_console_offers_only_the_action_that_matches_state_and_role():
+    from app.ui.console import _next_command
+
+    def row(state, executor="propio"):
+        return {"id": "OT-1", "state": state, "payload": {"ejecutor": executor}}
+
+    assert "aprobar" in _next_command(row("PendienteAprobacion"))
+    assert _next_command(row("Ejecutada", "propio")).startswith("cerrar")
+    assert "certificar" in _next_command(row("Ejecutada", "Servipat"))
+    assert "certificar" in _next_command(row("Observada", "Servipat"))
+    assert _next_command(row("Aprobada")) == ""

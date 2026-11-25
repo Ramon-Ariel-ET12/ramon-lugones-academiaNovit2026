@@ -161,11 +161,16 @@ CREATE TABLE IF NOT EXISTS closures (
     nota_id        text,
     correlation_id text,
     transcripcion  text NOT NULL DEFAULT '',
+    parte          jsonb NOT NULL DEFAULT '{}'::jsonb,
     partes         jsonb NOT NULL DEFAULT '[]'::jsonb,
     diferencias    jsonb NOT NULL DEFAULT '[]'::jsonb,
     monto_habilita_usd numeric(12, 2),
     created_at     timestamptz NOT NULL DEFAULT now()
 );
+
+-- The closure part (tasks done, hours, test result) was added after the first runs.
+-- The table already existed there, so the column is also applied by an idempotent ALTER.
+ALTER TABLE closures ADD COLUMN IF NOT EXISTS parte jsonb NOT NULL DEFAULT '{}'::jsonb;
 
 CREATE TABLE IF NOT EXISTS photo_analysis (
     id            text PRIMARY KEY,

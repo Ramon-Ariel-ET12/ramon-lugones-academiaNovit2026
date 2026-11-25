@@ -13,11 +13,10 @@ from pathlib import Path
 from typing import Protocol
 
 from app.analysis.models import Cause, ReviewFinding
-from app.domain.materials import Materials
+from app.domain.materials import DEFAULT_PART_QUANTITY, Materials
 from app.rag.corpus import bundled_path, canonical, load_fragments
 
 # A part without an explicit quantity is one unit, as in the approval rules.
-DEFAULT_QUANTITY = 1.0
 
 
 class CitationIndex(Protocol):
@@ -84,7 +83,7 @@ def review(equipment: str, causes: list[Cause], parts: list[dict], materials: Ma
     bom = set(materials.bom.get(equipment, []))
     for part in parts:
         code = str(part.get("codigo") or "")
-        quantity = float(part.get("cantidad") or DEFAULT_QUANTITY)
+        quantity = float(part.get("cantidad") or DEFAULT_PART_QUANTITY)
         if not code:
             findings.append(ReviewFinding(kind="part_not_in_bom",
                                           detail=f"la orden de {equipment} trae un repuesto sin código"))

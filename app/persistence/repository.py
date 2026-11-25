@@ -33,7 +33,7 @@ class Repository(NotesRepository, EventsRepository, OrdersRepository, QueueRepos
         # Orders a human still has to decide, with the analysis that justifies them.
         review = await self.db.fetch(
             """SELECT o.id, o.equipment, o.state, o.tasks, o.payload, a.causes, a.correlation_id,
-                      c.diferencias, c.monto_habilita_usd
+                      c.parte, c.diferencias, c.monto_habilita_usd
                FROM orders o
                LEFT JOIN order_analysis a ON a.order_id = o.id
                LEFT JOIN closures c ON c.orden_id = o.id

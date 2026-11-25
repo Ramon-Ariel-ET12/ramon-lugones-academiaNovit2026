@@ -34,7 +34,7 @@ PLANT = "http://localhost:8100"
 APP = "http://localhost:8200"
 BROKER = ("localhost", 1883)
 TABLES = ("notes, parts, attempts, tablet_messages, replies, events, orders, decisions, "
-          "sensor_state, sync_queue, usage_log")
+          "sensor_state, sync_queue, usage_log, order_analysis, closures, photo_analysis")
 
 
 def _docker(*args: str) -> subprocess.CompletedProcess:

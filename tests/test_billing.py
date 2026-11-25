@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from app.domain.billing import ITEM_OF_TASK, PriceList
 
-CONTRACT = Path(__file__).resolve().parent.parent / "academia2026-tp" / "datos" / "documentos" / "contrato" / "CT-SVP-2025.md"
-CORPUS = Path(__file__).resolve().parent.parent / "academia2026-tp" / "datos" / "documentos" / "fragmentos.jsonl"
+CONTRACT_DOC = "datos/documentos/contrato/CT-SVP-2025.md"
+CORPUS_DOC = "datos/documentos/fragmentos.jsonl"
 
 
 @pytest.fixture(scope="module")
-def prices() -> PriceList:
-    return PriceList.from_markdown(CONTRACT.read_text(encoding="utf-8"))
+def prices(plant_dir) -> PriceList:
+    return PriceList.from_markdown((plant_dir / CONTRACT_DOC).read_text(encoding="utf-8"))
 
 
 def test_the_seven_items_are_read(prices):
@@ -25,10 +23,11 @@ def test_the_seven_items_are_read(prices):
     assert prices.items["SVP-01"].hours_included == 16.0
 
 
-def test_the_corpus_chunks_produce_the_same_table(prices):
+def test_the_corpus_chunks_produce_the_same_table(prices, plant_dir):
     import json
 
-    chunks = [json.loads(line) for line in CORPUS.read_text(encoding="utf-8").splitlines() if line.strip()]
+    chunks = [json.loads(line)
+              for line in (plant_dir / CORPUS_DOC).read_text(encoding="utf-8").splitlines() if line.strip()]
     from_chunks = PriceList.from_chunks([{"doc": "CT-SVP-2025", "text": chunk["texto"]}
                                         for chunk in chunks if chunk["doc"] == "CT-SVP-2025"])
     assert {code: item.price_usd for code, item in from_chunks.items.items()} == \

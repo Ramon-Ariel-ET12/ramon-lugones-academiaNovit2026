@@ -9,10 +9,11 @@ pattern it can point at, with the order ids that support it.
 
 from __future__ import annotations
 
-import unicodedata
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from itertools import pairwise
+
+from app.domain.numbers import normalize_text
 
 # How close two jobs have to be to count as "the same fault coming back".
 PACKING_REPEAT_DAYS = 60
@@ -34,18 +35,14 @@ class HistoryFinding:
     order_ids: list[str]
     suggested_cause: str | None
     suggested_task: str | None
-
-
-def _fold(text: str | None) -> str:
-    """Lowercase, without accents, with the whitespace collapsed."""
-    decomposed = unicodedata.normalize("NFKD", (text or "").lower())
-    plain = "".join(char for char in decomposed if not unicodedata.combining(char))
-    return " ".join(plain.split())
+    suggested_code: str | None = None
+    suggested_citation: str | None = None
+    root_equipment: str | None = None
 
 
 def _text(order: dict) -> str:
     parts = [order.get("aviso"), order.get("trabajo_realizado"), order.get("descripcion")]
-    return _fold(" ".join(str(part) for part in parts if part))
+    return normalize_text(" ".join(str(part) for part in parts if part))
 
 
 def _tasks(order: dict) -> set[str]:
@@ -92,14 +89,24 @@ def _pump_of(equipment: str | None) -> str | None:
     return equipment if equipment and equipment.startswith("B-") else None
 
 
-def recurring_findings(equipment: str, orders: list[dict],
-                       now: datetime | None = None) -> list[HistoryFinding]:
+def _filter_for(orders: list[dict], *, default: str = "F-201B") -> str:
+    """The filter that catches what wears the valves: the secondary one when it exists.
+
+    The Anexo names F-201B (10 µm, the last barrier before the pumps); the history is
+    only used to confirm that the plant has that filter.
+    """
+    tags = {str(order.get("equipo")) for order in orders if CARTRIDGE_TASK in _tasks(order)}
+    if default in tags:
+        return default
+    return next((tag for tag in sorted(tags) if tag.startswith("F-201")), default)
+
+
+def recurring_findings(equipment: str, orders: list[dict]) -> list[HistoryFinding]:
     """The recurring-fault findings for one equipment, most specific first.
 
     ``orders`` may include other equipment: two pumps with worn valves in the same few
     days point at the filter upstream, and that cannot be seen from one pump alone.
     """
-    del now  # the patterns are relative to the orders themselves, not to "today"
     findings: list[HistoryFinding] = []
     own = [order for order in orders if str(order.get("equipo") or "") == equipment]
     valves = [order for order in own if VALVE_TASK in _tasks(order)]
@@ -121,6 +128,8 @@ def recurring_findings(equipment: str, orders: list[dict],
             order_ids=_ids(supporting or valves),
             suggested_cause="acople desalineado o elastómero gastado",
             suggested_task=ALIGNMENT_TASK,
+            suggested_code="F06",
+            suggested_citation="MBP-4 §7.1",
         ))
 
     # 2. Packing that lasts weeks: the plunger is scored, a new kit will not fix it.
@@ -136,7 +145,9 @@ def recurring_findings(equipment: str, orders: list[dict],
                         f"{PACKING_REPEAT_DAYS} días: el historial apunta al émbolo rayado"),
                 order_ids=_ids(scored),
                 suggested_cause="émbolo rayado",
-                suggested_task=PACKING_TASK,
+                suggested_task="NO-ESTANDAR",
+                suggested_code="F01",
+                suggested_citation="MBP-4 §6.3",
             ))
 
     # 3. The same valve fault in two pumps within days: the cartridge upstream is broken.
@@ -155,6 +166,9 @@ def recurring_findings(equipment: str, orders: list[dict],
                 order_ids=_ids(near + valves[:1]),
                 suggested_cause="cartucho roto aguas arriba (F-201)",
                 suggested_task=CARTRIDGE_TASK,
+                suggested_code="F08",
+                suggested_citation="MBP-4 §6.10",
+                root_equipment=_filter_for(orders),
             ))
 
     # 4. A pump that cavitates and a filter that was changed for it: the suction is the cause.
@@ -174,6 +188,9 @@ def recurring_findings(equipment: str, orders: list[dict],
                 order_ids=_ids(filters + cavitation[:1]),
                 suggested_cause="filtro primario colmatado",
                 suggested_task=CARTRIDGE_TASK,
+                suggested_code="F07",
+                suggested_citation="MBP-4 §6.9",
+                root_equipment=str(filters[-1].get("equipo") or "F-201A"),
             ))
 
     # 5. Oil that keeps disappearing without a visible leak: the pinion seal.
@@ -188,6 +205,7 @@ def recurring_findings(equipment: str, orders: list[dict],
                         f"apunta al retén del piñón, no a una pérdida visible"),
                 order_ids=_ids(leaking),
                 suggested_cause="retén del piñón",
-                suggested_task=None,
+                suggested_task="NO-ESTANDAR",
+                suggested_citation="MBP-4 §6.6",
             ))
     return findings

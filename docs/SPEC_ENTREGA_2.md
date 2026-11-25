@@ -25,22 +25,34 @@ evento ─▶ evidencia ─▶ síntomas ─▶ causas + historial ─▶ reviso
 ```
 
 1. **Evidencia** (`build_event_context`): filas, fotos, tendencia de las últimas 6 h,
-   secciones citadas del manual, últimas órdenes del equipo y repuestos disponibles.
-   Tiene deadline propio (`ORDER_DEADLINE_S`, 120 s); si se pasa, se sigue con el parte.
+   secciones citadas del manual, historial de órdenes y repuestos disponibles. El
+   historial se pide **sin filtrar por equipo** (una sola llamada, acotada a las 250
+   órdenes más recientes) porque los cinco casos del anexo necesitan ver las otras bombas
+   y los dos filtros. Tiene deadline propio (`ORDER_DEADLINE_S`, 120 s); si se pasa, se
+   sigue con el parte.
 2. **Síntomas** (`analysis/signatures.py`): un `Symptom` por hecho anómalo, con el número
-   que lo sostiene. La oscilación de la descarga (F02) se detecta como dispersión
-   (máx−mín ≥ 2 kg/cm²), no como nivel.
+   que lo sostiene. La oscilación de la descarga (F02) se detecta por el paso medio entre
+   muestras consecutivas (≥ 1,0 kg/cm², `PULSATION_STEP`), no por el rango de la ventana:
+   un nivel que cambia despacio no es una pulsación.
 3. **Causas** (`analysis/causes.py`): ordenadas por confianza, cada una con `citation`,
    `evidence`, `missing` y `task_code`. Reglas tomadas de la matriz de firmas (§6.2) y de
    las tablas diferenciales (§7.1 vibración, §7.4 succión, §7.5/§7.6 diferencial,
-   §7.7 goteo). F09 pone la causa raíz fuera de la bomba; F10 no requiere orden.
+   §7.7 goteo). F09 pone la causa raíz fuera de la bomba; F10 no requiere orden. Si el
+   historial vuelve insuficiente la reparación estándar (émbolo rayado, retén del piñón),
+   la acción puede ser `NO-ESTANDAR` (el contrato la acepta y el planificador la aprueba).
 4. **Historial** (`analysis/history.py`): los cinco casos recurrentes del anexo, buscados
    sobre el texto libre con tolerancia a abreviaturas y errores, exigiendo repetición en
-   el tiempo (no un antecedente viejo suelto). Un hallazgo refuerza una causa que la
-   evidencia ya sostiene; nunca inventa una causa nueva.
+   el tiempo (no un antecedente viejo suelto). El hallazgo cambia la causa probable y,
+   cuando el manual lo dice, la acción: acople (§7.1), émbolo rayado (§6.3), cartucho roto
+   aguas arriba (§6.10), filtro primario (§6.9), retén del piñón (§6.6). Cada patrón se
+   aplica solo si la evidencia del evento actual lo sostiene (vibración, goteo, succión
+   baja, nivel de aceite bajo); un antecedente no desplaza una causa que la evidencia
+   actual ya explica.
 5. **Revisor** (`analysis/review.py`): toda cita debe existir y estar vigente en el índice;
    todo repuesto debe estar en la lista de materiales del equipo. Cita ausente o vencida
-   ⇒ la orden **no se publica**. Stock faltante ⇒ se informa y la orden nace pendiente.
+   (o un análisis sin causas) ⇒ la orden **no se publica**. Un repuesto fuera de la lista
+   se informa y la orden nace pendiente, nunca aprobada; el stock faltante se informa
+   igual y no bloquea la publicación.
 6. **Borrador y reglas**: `make_proposal` + `evaluate` (cinco reglas, ver §3). Se publica
    `Borrador` y enseguida `Aprobada` o `PendienteAprobacion` con `motivo`.
 7. **Persistencia**: `order_analysis` guarda causas, citas, hallazgos del revisor, partes
@@ -64,8 +76,15 @@ revisión humana. Los tests cubren los bordes: USD 2.499 y 2.500, `T-B-VAL` (USD
 | Supervisor | `close` | `Ejecutada` (trabajo propio) → `Cerrada` |
 | Inspector | `certify` / `observe` | `Ejecutada` → `Certificada` (con habilita y monto) / `Observada` (con motivo) |
 
-- `POST /api/orders/{id}/decision` con `{role, action, actor, motive?, habilita?}`;
-  rechazar y observar exigen motivo; certificar exige número de habilitación y monto.
+- `POST /api/orders/{id}/decision` con `{role, action, actor, motive?, habilita?, monto_declarado?}`;
+  rechazar y observar exigen motivo; certificar exige número de habilitación y monto. El
+  `monto_declarado` (lo que factura la contratista) solo se usa para marcar la diferencia
+  contra el contrato en el cierre.
+- El rol está atado al ejecutor: el supervisor solo cierra trabajo propio (`Ejecutada` →
+  `Cerrada`); el inspector solo certifica u observa trabajo de la contratista (`Ejecutada`
+  o `Observada` → `Certificada` / `Observada`). Un cruce de rol devuelve 409. Una orden
+  que no está `Ejecutada` no se puede cerrar: el cierre del técnico no saltea al
+  planificador.
 - Toda decisión se registra en `decisions` con actor, rol y `correlation_id`, y el nuevo
   estado se publica validado contra `OrdenSistema`.
 - Rechazos por estado incorrecto devuelven 409 con el motivo, no un estado inconsistente.
@@ -74,6 +93,8 @@ revisión humana. Los tests cubren los bordes: USD 2.499 y 2.500, `T-B-VAL` (USD
 
 - La orden pendiente es una fila en `orders` más su `payload`; al arrancar se re-publican
   las órdenes abiertas con el mismo id y estado (`_resume_orders`), nunca como `Borrador`.
+  Una orden que quedó en `Borrador` (murió entre la publicación del borrador y la
+  decisión) se borra al arrancar: no se reanuda y bloquearía el re-draft del mismo fallo.
 - El corte de luz de `sin-luz` mata los contenedores con `academia.planta=pc`;
   `restart: unless-stopped` los levanta y la orden pendiente sobrevive. No se duplica: el
   id es determinista (`order_id(equipo, tareas, evento_id)`) y `open_order` evita una
@@ -83,8 +104,11 @@ revisión humana. Los tests cubren los bordes: USD 2.499 y 2.500, `T-B-VAL` (USD
 ## 6. Cierre y certificación
 
 1. `planta/cierres` → se descarga el audio y se transcribe con el ASR local (presupuesto
-   de tiempo propio).
+   de tiempo propio). Un cierre solo se procesa si la orden está `Aprobada`, `Ejecutada`
+   o `Observada`; sobre una orden pendiente se ignora (no consume el cierre).
 2. `parse_closure` extrae tareas hechas, repuestos usados (con cantidad), horas y prueba.
+   El parte completo se persiste en `closures.parte` y se devuelve en
+   `GET /api/orders/{id}` y en la consola, haya o no lista de precios.
 3. `compare` marca cada diferencia: `tarea_faltante`, `tarea_extra`, `repuesto_faltante`,
    `repuesto_extra`, `cantidad`, `horas` (solo exceso grave sobre las incluidas),
    `prueba` (sin prueba declarada) y `precio` (monto declarado distinto del contrato o
@@ -99,7 +123,11 @@ revisión humana. Los tests cubren los bordes: USD 2.499 y 2.500, `T-B-VAL` (USD
 
 - `app/vision/nvidia.py`: cliente de la API compatible con OpenAI de NVIDIA, con tipo de
   imagen por *magic bytes*, respuesta JSON estricta, reintento solo en errores transitorios
-  y sin registrar la clave ni la imagen.
+  y sin registrar la clave ni la imagen. El modelo (`meta/llama-3.2-11b-vision-instruct`),
+  el endpoint, la clave y el timeout salen de `VISION_MODEL`, `VISION_BASE_URL`,
+  `NVIDIA_API_KEY` y `VISION_TIMEOUT_S`, y el `docker-compose.yml` los pasa a `cerebro`.
+  Cada llamada registra en `usage_log` (`task='vision'`) el modelo, los tokens de
+  entrada/salida que reporta la API, la latencia y el costo.
 - `app/vision/queue.py`: `submit` analiza lo que puede y encola el resto (`photo_analysis`);
   `drain` corre en su propia tarea y se detiene si el enlace está caído.
 - El veredicto (`structural_damage`) marca el equipo para revisión humana; un análisis

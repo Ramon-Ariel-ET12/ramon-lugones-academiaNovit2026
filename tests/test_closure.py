@@ -17,9 +17,8 @@ from app.domain.billing import PriceList
 from app.domain.materials import load_materials
 from app.processing.closure import compare, parse_closure
 
-PLANT = Path(__file__).resolve().parent.parent / "academia2026-tp" / "datos" / "documentos" / "contrato"
-EXAMPLES = PLANT / "cierres_ejemplo.json"
-CONTRACT = PLANT / "CT-SVP-2025.md"
+CONTRACT_DOC = "datos/documentos/contrato/CT-SVP-2025.md"
+EXAMPLES_DOC = "datos/documentos/contrato/cierres_ejemplo.json"
 
 
 @pytest.fixture(scope="module")
@@ -28,13 +27,13 @@ def materials():
 
 
 @pytest.fixture(scope="module")
-def prices():
-    return PriceList.from_markdown(CONTRACT.read_text(encoding="utf-8"))
+def prices(plant_dir):
+    return PriceList.from_markdown((plant_dir / CONTRACT_DOC).read_text(encoding="utf-8"))
 
 
 @pytest.fixture(scope="module")
-def examples():
-    return json.loads(EXAMPLES.read_text(encoding="utf-8"))
+def examples(plant_dir):
+    return json.loads((plant_dir / EXAMPLES_DOC).read_text(encoding="utf-8"))
 
 
 def order_of(example: dict) -> dict:
@@ -52,6 +51,15 @@ def run(example: dict, materials, prices):
     return compare(order_of(example), closure, materials, prices,
                    equipment_count=equipment_count(example), started_at=example["fecha_inicio"],
                    declared_amount=example["monto_declarado_usd"])
+
+
+def compare_order(order: dict, example: dict, materials, prices, *, text: str | None = None,
+                  declared_amount: float | None = None):
+    """The closure of the example against an order that may have been modified."""
+    closure = parse_closure(text or example["cierre_texto"], orden_id=example["orden_id"],
+                            tecnico=example["tecnico"], empresa="Servipat", materials=materials)
+    return compare(order, closure, materials, prices, equipment_count=equipment_count(example),
+                   started_at=example["fecha_inicio"], declared_amount=declared_amount)
 
 
 def test_the_examples_are_the_real_fixture(examples):
@@ -148,12 +156,59 @@ def test_a_missing_proof_is_a_difference(materials, prices):
     assert "prueba" in {difference.kind for difference in result.differences}
 
 
-def test_the_price_list_comes_from_the_repository_texts(materials, prices):
+def test_the_price_list_comes_from_the_repository_texts(materials, prices, plant_dir):
     """The production path: rag_texts rows -> PriceList (the query must carry `doc`)."""
     rows = [{"doc": "CT-SVP-2025", "citation": "CT-SVP-2025 §2.1", "section_key": "precios",
-             "text": CONTRACT.read_text(encoding="utf-8")}]
+             "text": (plant_dir / CONTRACT_DOC).read_text(encoding="utf-8")}]
     from_rows = PriceList.from_chunks(rows)
     assert len(from_rows) == len(prices)
     assert from_rows.amount_for(["I-VIB"], equipment_count=3) == 960.0
     # A row without `doc` is accepted too (a caller that already filtered the document).
     assert len(PriceList.from_chunks([{"text": rows[0]["text"]}])) == len(prices)
+
+
+# ------------------------------------------------- los tres tipos que faltaban
+
+
+def test_a_closure_without_declared_hours_has_no_hours_difference(materials, prices, examples):
+    """Current behaviour: without declared hours there is no hours difference to mark."""
+    example = next(item for item in examples if item["orden_id"] == "OT-25-0046")
+    text = example["cierre_texto"].split("Fueron")[0].strip()
+    closure = parse_closure(text, orden_id=example["orden_id"], materials=materials)
+    result = compare_order(order_of(example), example, materials, prices, text=text,
+                           declared_amount=example["monto_declarado_usd"])
+    assert closure.hours is None
+    assert result.differences == []
+    assert result.monto_habilita_usd == pytest.approx(960.0)
+
+
+def test_a_task_the_order_asked_and_the_closure_forgot_is_missing(materials, prices, examples):
+    example = next(item for item in examples if item["orden_id"] == "OT-25-0046")
+    order = {**order_of(example), "tareas": ["I-VIB", "T-B-EMP"]}
+    result = compare_order(order, example, materials, prices,
+                           declared_amount=example["monto_declarado_usd"])
+    assert [difference.kind for difference in result.differences] == ["tarea_faltante"]
+    assert "T-B-EMP" in result.differences[0].detail
+    assert result.monto_habilita_usd == pytest.approx(960.0)  # T-B-EMP has no contract item
+
+
+def test_a_task_the_order_did_not_ask_is_extra(materials, prices, examples):
+    """OT-25-0119 closes a laser alignment (T-B-ALI) with its elastomer."""
+    example = next(item for item in examples if item["orden_id"] == "OT-25-0119")
+    order = {"id": example["orden_id"], "equipo": example["equipo"], "tareas": ["T-B-ROD"],
+             "repuestos": [{"codigo": "ACO-ELAST-90", "cantidad": 1}], "ts": example["fecha_inicio"]}
+    result = compare_order(order, example, materials, prices)
+    kinds = {difference.kind for difference in result.differences}
+    assert kinds == {"tarea_faltante", "tarea_extra"}
+    extra = next(difference for difference in result.differences if difference.kind == "tarea_extra")
+    assert "T-B-ALI" in extra.detail
+
+
+def test_a_reserved_part_the_closure_does_not_use_is_missing(materials, prices, examples):
+    example = next(item for item in examples if item["orden_id"] == "OT-25-0046")
+    order = {**order_of(example), "repuestos": [{"codigo": "TX-SELLO-CAR", "cantidad": 1}]}
+    result = compare_order(order, example, materials, prices,
+                           declared_amount=example["monto_declarado_usd"])
+    assert [difference.kind for difference in result.differences] == ["repuesto_faltante"]
+    assert "TX-SELLO-CAR" in result.differences[0].detail
+    assert result.monto_habilita_usd == pytest.approx(960.0)

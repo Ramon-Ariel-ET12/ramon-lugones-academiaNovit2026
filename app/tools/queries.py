@@ -8,7 +8,7 @@ import logging
 import time
 from collections.abc import Awaitable, Callable
 
-from app.domain.materials import Materials
+from app.domain.materials import DEFAULT_PART_QUANTITY, Materials
 from app.domain.models import PlantSnapshot
 from app.integrations.plant_api import PlantClient
 from app.rag.search import ManualSearch
@@ -94,7 +94,8 @@ def audited(name: str, timeout: float = 5.0, retries: int = 1):
 
 def _parts(task) -> list[PartUse]:
     """The task's spare parts as the strict contract model the tools expose."""
-    return [PartUse(codigo=part["codigo"], cantidad=float(part.get("cantidad", 0))) for part in task.parts]
+    return [PartUse(codigo=part["codigo"],
+                    cantidad=float(part.get("cantidad") or DEFAULT_PART_QUANTITY)) for part in task.parts]
 
 
 class Tools:

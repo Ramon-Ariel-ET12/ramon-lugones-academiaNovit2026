@@ -9,7 +9,6 @@ from psycopg.types.json import Jsonb
 
 from app.persistence.base import DbRepository
 
-TERMINAL_ORDER_STATES = {"Rechazada", "Cerrada", "Certificada"}
 OPEN_ORDER_STATES = {"Borrador", "PendienteAprobacion", "Aprobada", "Ejecutada", "Observada"}
 
 class OrdersRepository(DbRepository):
@@ -38,6 +37,17 @@ class OrdersRepository(DbRepository):
             "SELECT id, equipment, tasks, state, payload FROM orders WHERE state = ANY(%s) ORDER BY created_at",
             (list(OPEN_ORDER_STATES),),
         )
+
+    async def clear_draft_orders(self) -> int:
+        """Remove orders that died between the draft and the final publication.
+
+        A ``Borrador`` is never resumed: the order was created but the decision that
+        follows was not published, so leaving the row behind would block the re-draft of
+        the same fault and hide the order from every list. Deleting it at startup is
+        safe: the event is still persisted and will be analysed again.
+        """
+        rows = await self.db.fetch("DELETE FROM orders WHERE state = 'Borrador' RETURNING id")
+        return len(rows)
 
     async def orders_by_state(self, state: str, limit: int = 20) -> list[dict]:
         return await self.db.fetch(
@@ -75,15 +85,23 @@ class OrdersRepository(DbRepository):
 
     async def save_closure(self, orden_id: str, nota_id: str | None, transcript: str,
                             parts: list[dict], differences: list[dict], *, correlation_id: str | None = None,
-                            monto: float | None = None) -> None:
+                            monto: float | None = None, parte: dict | None = None) -> None:
+        """Store the closure part and its comparison with the order.
+
+        ``parte`` is the assembled closure (tasks done, hours, test result). When the
+        closure comes from the voice note, ``nota_id`` is set; when it is rebuilt from a
+        decision, it is left alone so the original note is not lost.
+        """
         await self.db.execute(
-            """INSERT INTO closures (orden_id, nota_id, correlation_id, transcripcion, partes, diferencias,
-                                     monto_habilita_usd)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)
-               ON CONFLICT (orden_id) DO UPDATE SET nota_id = EXCLUDED.nota_id,
-                 transcripcion = EXCLUDED.transcripcion, partes = EXCLUDED.partes,
-                 diferencias = EXCLUDED.diferencias, monto_habilita_usd = EXCLUDED.monto_habilita_usd""",
-            (orden_id, nota_id, correlation_id, transcript, Jsonb(parts), Jsonb(differences), monto),
+            """INSERT INTO closures (orden_id, nota_id, correlation_id, transcripcion, parte, partes,
+                                     diferencias, monto_habilita_usd)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (orden_id) DO UPDATE SET nota_id = coalesce(EXCLUDED.nota_id, closures.nota_id),
+                 transcripcion = EXCLUDED.transcripcion, parte = EXCLUDED.parte,
+                 partes = EXCLUDED.partes, diferencias = EXCLUDED.diferencias,
+                 monto_habilita_usd = EXCLUDED.monto_habilita_usd""",
+            (orden_id, nota_id, correlation_id, transcript, Jsonb(parte or {}), Jsonb(parts),
+             Jsonb(differences), monto),
         )
 
     async def get_closure(self, orden_id: str) -> dict | None:

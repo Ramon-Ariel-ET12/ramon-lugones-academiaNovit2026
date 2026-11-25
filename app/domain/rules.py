@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.materials import Materials
+from app.domain.materials import DEFAULT_PART_QUANTITY, Materials
 
 MAX_PART_COST_USD = 2500.0
 WAREHOUSE = "yacimiento"
@@ -47,6 +47,20 @@ class Decision(BaseModel):
         return None if self.approved else "; ".join(self.reasons)
 
 
+def reduces_injection(equipment: str, tasks: list[str], materials: Materials, state: PlantState) -> bool:
+    """Whether stopping this equipment leaves the plant injecting less water.
+
+    One definition for the proposal and for the rule, so the payload's
+    ``reduce_inyeccion`` and the planner's motive cannot drift apart.
+    """
+    stops = any(task.stops for task in (materials.task(code, equipment) for code in tasks)
+                if task is not None)
+    return bool(
+        stops and equipment.startswith("B-") and state.pumps.get(equipment) == "marcha"
+        and not any(other != equipment and status == "parada" for other, status in state.pumps.items())
+    )
+
+
 def build_proposal(equipment: str, task_codes: list[str], materials: Materials,
                    state: PlantState, *, structural_damage: bool = False) -> Proposal:
     parts: dict[str, float] = {}
@@ -60,10 +74,9 @@ def build_proposal(equipment: str, task_codes: list[str], materials: Materials,
         if task.executor != "propio":
             executor = task.executor
         for part in task.parts:
-            parts[part["codigo"]] = parts.get(part["codigo"], 0.0) + float(part.get("cantidad", 0))
-    reduces = stops and equipment.startswith("B-") and state.pumps.get(equipment) == "marcha" and not any(
-        other != equipment and status == "parada" for other, status in state.pumps.items()
-    )
+            parts[part["codigo"]] = (parts.get(part["codigo"], 0.0)
+                                      + float(part.get("cantidad") or DEFAULT_PART_QUANTITY))
+    reduces = reduces_injection(equipment, task_codes, materials, state)
     return Proposal(
         equipment=equipment,
         tasks=list(task_codes),
@@ -91,11 +104,7 @@ def evaluate(proposal: Proposal, materials: Materials, state: PlantState, *,
             if task.executor != "propio":
                 reasons.append(f"la tarea {code} la hace {task.executor}")
 
-    tasks = [materials.task(code, proposal.equipment) for code in proposal.tasks]
-    stops = any(task.stops for task in tasks if task is not None)
-    if (stops and proposal.equipment.startswith("B-") and state.pumps.get(proposal.equipment) == "marcha"
-            and not any(other != proposal.equipment and status == "parada"
-                        for other, status in state.pumps.items())):
+    if reduces_injection(proposal.equipment, proposal.tasks, materials, state):
         reasons.append("reduce la inyección: no hay bomba de reserva disponible")
 
     bom = set(materials.bom.get(proposal.equipment, []))

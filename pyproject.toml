@@ -1,7 +1,7 @@
 [project]
 name = "academia-novit-2026"
 version = "0.1.0"
-description = "PIA-3 plant assistant for the Academia Novit 2026 first deliverable"
+description = "PIA-3 plant assistant for the Academia Novit 2026 (deliveries 1 and 2)"
 requires-python = ">=3.11,<3.12"
 dependencies = [
     "pydantic>=2.7",

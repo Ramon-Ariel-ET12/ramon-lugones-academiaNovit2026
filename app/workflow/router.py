@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 Topic = Literal["parte", "sensor", "respuesta", "cierre", "energia", "desconocido"]
-Route = Literal["seguridad", "parte", "sensor", "respuesta", "cierre", "energia"]
+Route = Literal["seguridad", "parte", "sensor", "respuesta", "cierre", "energia", "desconocido"]
 
 NOTE_TOPIC = "planta/recorridas"
 SENSOR_PREFIX = "planta/sensores/"
@@ -59,4 +59,4 @@ def sensor_parts(payload: dict) -> tuple[str, str] | None:
 
 def classify(topic: str, payload: dict) -> Routed:
     """Route a message by its topic. Parts stay ``parte`` until the transcript says otherwise."""
-    return Routed(route=route_topic(topic), topic=topic, payload=payload)  # type: ignore[arg-type]
+    return Routed(route=route_topic(topic), topic=topic, payload=payload)

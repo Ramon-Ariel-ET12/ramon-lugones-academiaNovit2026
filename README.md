@@ -1,12 +1,14 @@
 # PIA-3 · Parte por voz, detección en planta y órdenes
 
-Sistema para la planta de inyección de agua PIA-3 de la Academia Novit 2026, primera
-entrega: **parte de recorrida por voz**, **detección determinista en planta**,
-**alerta de seguridad local**, **herramientas de solo lectura + MCP** y **RAG con
-pgvector medido contra BM25**.
+Sistema para la planta de inyección de agua PIA-3 de la Academia Novit 2026.
+**Entrega 1**: parte de recorrida por voz, detección determinista en planta, alerta de
+seguridad local, herramientas de solo lectura + MCP y RAG con pgvector medido contra
+BM25. **Entrega 2**: ruteo y workflow explícito, análisis con causas citadas, borrador de
+orden, reglas de aprobación en código, decisión humana persistida, visión de las fotos y
+cierre/certificación con habilita.
 
 El repositorio se levanta al lado de la planta simulada (repo `academia2026-tp`, que no
-forma parte de esta entrega) con `docker compose up`.
+forma parte de este repo) con `docker compose up`.
 
 ## Arquitectura
 
@@ -36,17 +38,22 @@ planta-lan (interna, sin internet)                         planta-control (inter
   (`planta-lan` + `planta-control`), porque Docker no publica puertos de un contenedor
   que está solo en una red `internal`.
   El `cerebro` hace: recepción MQTT, descarga de audio y fotos, transcripción local, detección de
-  condición insegura, extracción del parte, diálogo con la tablet, eventos, reglas de
-  aprobación, órdenes, herramientas locales, índice y búsqueda de manuales, memoria.
-  Nada de esto necesita internet: el enlace puede estar caído y la planta sigue
-  operando y alertando.
+  condición insegura, extracción del parte, diálogo con la tablet, eventos, análisis citado,
+  reglas de aprobación, órdenes, cierre y comparación, herramientas locales, índice y
+  búsqueda de manuales, memoria. Nada de esto necesita internet: el enlace puede estar
+  caído y la planta sigue operando y alertando. La única llamada a un modelo en la nube
+  es el análisis de una foto (visión NVIDIA), a través del proxy del enlace y solo si hay
+  clave; sin enlace queda en cola y no bloquea nada.
 - **Nube (`nube-sync`, red `planta-control`)**: réplica/archivo de eventos, órdenes,
   partes y digests de sensores. Es lo que hace medible `pendientes_sincronizar`.
-  Nunca participa de la detección ni de la alerta de seguridad.
+  Nunca participa de la detección ni de la alerta de seguridad; la visión es una consulta
+  opcional del análisis, no del camino de la alerta.
 
 Justificación: el hardware de planta (4 núcleos, 8 GB, sin GPU) alcanza para
-`faster-whisper small` int8 y un modelo de lenguaje de 0,5 B opcional; la latencia de
-la nube es incompatible con la alerta de 30 s.
+`faster-whisper small` int8 y un modelo de lenguaje de 0,5 B opcional; la visión de las
+fotos no cabe en ese presupuesto y se delega en NVIDIA cuando hay enlace, porque su
+resultado puede forzar una revisión humana pero nunca es la alerta. La latencia de la
+nube es incompatible con la alerta de 30 s.
 
 ## Requisitos
 
@@ -188,17 +195,22 @@ confirmación → parte **Confirmado** → eventos.
 ### Orquestación de la entrega 2
 
 El workflow es explícito: cada paso es una función, y solo dos pasos son "de agente"
-(un modelo decide algo). El resto es código determinista.
+(un modelo decide algo): la lectura de respuestas libres del operador (LLM local,
+opcional y apagado por defecto) y el análisis de la foto (visión NVIDIA, solo con enlace).
+El resto es código determinista.
+
+Leyenda: **◎** = paso de agente (un modelo decide); todo lo no marcado es workflow fijo
+(código determinista).
 
 ```
-                       ┌──────────────────────── código determinista ────────────────────────┐
+                       ┌──────────────────────── workflow fijo (código) ────────────────────────┐
 planta/recorridas ──▶ ruteo ──▶ parte ──▶ transcripción (ASR local) ──▶ parser ──▶ tablet
 planta/sensores/#  ──▶ ruteo ──▶ sensor ──▶ detector de desvío sostenido ──┐
-planta/respuestas  ──▶ ruteo ──▶ respuesta ──▶ lector de respuestas ──┐    │
+planta/respuestas  ──▶ ruteo ──▶ respuesta ──▶ ◎ lector de respuestas ──┐    │
 planta/cierres     ──▶ ruteo ──▶ cierre ──▶ transcripción ──▶ parser ─┼──▶ comparación
 planta/energia     ──▶ ruteo ──▶ energía (solo registro)               │    │
                                                                       ▼    ▼
-   evento Escalado ──▶ evidencia (parte + fotos + tendencia + historial, build_event_context)
+   evento Escalado ──▶ evidencia (parte + fotos ◎ visión + tendencia + historial, build_event_context)
                      ──▶ síntomas (signatures) ──▶ causas citadas (MBP-4 §6/§7) ──▶ historial recurrente
                      ──▶ revisor (cita existe y vigente · repuesto en la lista de materiales)
                      ──▶ borrador (OrdenSistema) ──▶ reglas en código ──▶ Aprobada | Pendiente(motivo)
@@ -209,19 +221,22 @@ planta/energia     ──▶ ruteo ──▶ energía (solo registro)           
 planta/cierres ──▶ cierre comparado con la orden ──┘   (el monto del habilita sale del contrato)
 ```
 
-**Qué decide el agente y qué no.** El modelo de lenguaje opcional (apagado por defecto)
-solo interpreta respuestas libres del operador y frases de causas; nunca elige la tarea,
-nunca aprueba y nunca toca la seguridad. Las tareas salen de la tabla de fallas del manual
-y de la lista de materiales; la aprobación sale de las cinco reglas.
+**Qué decide el agente y qué no.** Los dos pasos marcados con ◎ son los únicos donde un
+modelo decide algo. El modelo de lenguaje opcional (apagado por defecto) solo interpreta
+respuestas libres del operador y frases de causas; la visión solo clasifica la foto y
+marca daño estructural. Ninguno elige la tarea, aprueba una orden ni toca la seguridad.
+Las tareas salen de la tabla de fallas del manual y de la lista de materiales; la
+aprobación sale de las cinco reglas.
 
 **Ruteo.** `app/workflow/router.py` clasifica cada tópico (`parte`, `sensor`, `respuesta`,
 `cierre`, `energía`). La seguridad no es un tópico aparte: el detector local decide si un
 parte va por la ruta de seguridad antes de cualquier modelo o red.
 
 **Paso revisor.** Antes de publicar una orden, `app/analysis/review.py` verifica que cada
-cita exista y esté vigente en el índice y que cada repuesto esté en la lista de materiales;
-si no, la orden no se publica. El stock faltante se informa (la orden nace pendiente) pero
-no bloquea.
+cita exista y esté vigente en el índice y que cada repuesto esté en la lista de materiales
+del equipo. Una cita ausente o vencida, o un análisis sin causas, impide publicar la
+orden; un repuesto fuera de la lista se informa y deja la orden pendiente (nunca se
+aprueba sola). El stock faltante también se informa y la orden nace pendiente.
 
 **Análisis citado.** `app/analysis/` convierte la evidencia en causas ordenadas, cada una
 con su cita del manual (matriz de firmas §6.2, tablas diferenciales §7.x), su evidencia y
@@ -245,13 +260,20 @@ El contrato no trae canal para las decisiones humanas, así que la interfaz es p
 | Rol | Acción | Desde → hacia |
 |---|---|---|
 | Planificador | aprobar / rechazar | `PendienteAprobacion` → `Aprobada` / `Rechazada` |
-| Supervisor | cerrar | `Ejecutada` → `Cerrada` |
-| Inspector | certificar / observar | `Ejecutada` → `Certificada` / `Observada` |
+| Supervisor | cerrar | `Ejecutada` (trabajo propio) → `Cerrada` |
+| Inspector | certificar / observar | `Ejecutada` / `Observada` (contratista) → `Certificada` / `Observada` |
+
+El rol está atado al ejecutor de la orden: el supervisor solo cierra trabajo propio y el
+inspector solo certifica u observa trabajo de la contratista; cualquier otro cruce
+devuelve 409. Una orden pendiente no puede pasar a `Ejecutada` con un cierre: primero la
+decide el planificador (el cierre no se consume, se puede reenviar).
 
 - API: `GET /api/orders`, `GET /api/orders/{id}` (orden + análisis + cierre + decisiones),
-  `POST /api/orders/{id}/decision`.
-- CLI: `python scripts/orden.py pendientes | ver | aprobar | rechazar | cerrar | certificar | observar`.
-- Web: la consola (`/`) lista las órdenes para decidir con sus causas, citas y diferencias.
+  `POST /api/orders/{id}/decision` (`monto_declarado` opcional al certificar).
+- CLI: `python scripts/orden.py pendientes | ver | aprobar | rechazar | cerrar | certificar | observar`
+  (`certificar … --monto` marca la diferencia contra lo que declaró la contratista).
+- Web: la consola (`/`) lista las órdenes para decidir con sus causas, citas, el parte de
+  cierre y las diferencias.
 - Cada decisión se registra con actor, rol, motivo y `correlation_id`; el estado se
   publica validado contra `OrdenSistema`. Una orden pendiente sobrevive al corte de luz
   con el mismo id y estado, y no se duplica.
@@ -259,21 +281,41 @@ El contrato no trae canal para las decisiones humanas, así que la interfaz es p
 ### Cierre y certificación
 
 `planta/cierres` se transcribe y se arma el parte de cierre (tareas hechas, repuestos
-usados, horas y prueba final). Se compara contra la orden y se marca cada diferencia
-(tarea faltante/extra, repuesto faltante/extra, cantidad, horas, prueba, precio); la orden
-pasa a `Ejecutada`. El monto del habilita sale de la orden y de la lista de precios de
-`CT-SVP-2025` leída del contrato (`app/domain/billing.py`), nunca de lo que declara el
-cierre, y se valida contra `cierres_ejemplo.json` en los tests (12 cierres: movilización
-mal cobrada, horas de más, repuesto extra, lista vieja).
+usados, horas y prueba final); el parte queda persistido en `closures.parte` y se ve en
+`GET /api/orders/{id}` y en la consola. Se compara contra la orden y se marca cada
+diferencia (tarea faltante/extra, repuesto faltante/extra, cantidad, horas, prueba,
+precio); la orden pasa a `Ejecutada`. El monto del habilita sale de la orden y de la lista
+de precios de `CT-SVP-2025` leída del contrato (`app/domain/billing.py`), nunca de lo que
+declara el cierre, y se valida contra `cierres_ejemplo.json` en los tests (12 cierres:
+movilización mal cobrada, horas de más, repuesto extra, lista vieja). Con `--monto` en la
+certificación, la diferencia entre lo declarado y el contrato queda registrada en el
+cierre; el monto de la habilita sigue saliendo del contrato.
+
+**Cómo verificar G2/G3 a mano** (la rúbrica los tiene inactivos y se revisan a mano):
+
+```bash
+# con el stack arriba y una orden Ejecutada de trabajo propio
+python scripts/orden.py cerrar <OT> --actor "Luis Soto"          # -> Cerrada
+# con una orden Ejecutada de la contratista (ejecutor != propio)
+python scripts/orden.py observar <OT> --actor "Inés Ríos" --motivo "declara horas de más"
+python scripts/orden.py certificar <OT> --actor "Inés Ríos" --habilita HAB-2026-0001 --monto 1300
+# -> Certificada, habilita HAB-2026-0001, monto del contrato y diferencia de precio marcada
+python scripts/orden.py ver <OT>                                  # orden + cierre + decisiones
+```
+
+El procedimiento completo, con los estados esperados y la evidencia de la corrida, está
+en [`docs/VERIFICACION_ENTREGA_2.md`](docs/VERIFICACION_ENTREGA_2.md).
 
 ### Fotos y visión (multimodal)
 
 Con `VISION_ENABLED=true` y `NVIDIA_API_KEY`, las fotos se analizan con un modelo de
 visión de NVIDIA (API compatible con OpenAI, a través del proxy del enlace) y el veredicto
 se guarda en `photo_analysis`. Detecta daño estructural y el tipo de foto (empaquetadura,
-correas, acople, manómetro, filtro). Sin enlace o sin clave, la foto queda en cola y se
-analiza cuando vuelve; la alerta de seguridad nunca depende de este paso, y un análisis
-fallido nunca se lee como "sin daño".
+correas, acople, manómetro, filtro). Cada análisis registra en `usage_log` el modelo, los
+tokens de entrada/salida que reporta la API, la latencia y el costo (0 con el nivel
+gratuito de NIM). Sin enlace o sin clave, la foto queda en cola y se analiza cuando
+vuelve; la alerta de seguridad nunca depende de este paso, y un análisis fallido nunca se
+lee como "sin daño". El modelo y el costo están en [`INFORME.md`](INFORME.md) §2.4.
 
 ### Herramientas y MCP
 
@@ -365,7 +407,14 @@ Todo el proceso, en el orden correcto y con la evidencia en `var/audit/verificac
 
 ## Resultados medidos
 
-- **Evaluación oficial (`martes-tranquilo` + `fuga-sin-enlace`): 91,3 / 100 · APRUEBA** en la
+- **Entrega 2 (cuatro escenarios del anexo): 91,2 / 100 · APRUEBA** en la corrida del
+  **2026-11-21 02:37** (commit `bdd2976`) sobre `tormenta-perfecta`, `sin-luz`,
+  `contratista` y `fuga-sin-enlace`, sin faltas eliminatorias. D1 (reglas de aprobación),
+  D2 (orden adecuada) y G1 (orden ejecutada) dan 100 %; F3 y E1/E2 tienen techos de
+  guion explicados en [`docs/RESULTADOS.md`](docs/RESULTADOS.md). La matriz requisito por
+  requisito y la demostración manual de G2/G3 están en
+  [`docs/VERIFICACION_ENTREGA_2.md`](docs/VERIFICACION_ENTREGA_2.md).
+- **Entrega 1 (`martes-tranquilo` + `fuga-sin-enlace`): 91,3 / 100 · APRUEBA** en la
   corrida del **2026-11-10 17:39** (commit `b9fa0ff`) con artefactos en
   `academia2026-tp/correccion/corridas/academiaNovit2026/`, sin faltas eliminatorias.
   A1, A4a, A4b, B1, B2, E1–E3 y F1–F2 dan 100 %; A2 y A3 (69 %) dependen de la voz que
@@ -389,12 +438,13 @@ Todo el proceso, en el orden correcto y con la evidencia en `var/audit/verificac
   (`workflow_call`) con lint, el contrato de despliegue y la suite completa contra un
   servicio `pgvector/pgvector:pg16`; `push.yml` lo invoca y `rag.yml` corre la evaluación
   de recuperación con umbral sobre la línea de base.
-- Pruebas: **169 pruebas, 0 fallos** con `TEST_DATABASE_URL` apuntando a la base del
-  compose (168 sin la de integración, que se saltea si la variable no está);
-  `ruff check .` limpio.
+- Pruebas: **302 pruebas, 0 fallos** con `TEST_DATABASE_URL` apuntando a la base del
+  compose (301 sin la de integración, que se saltea si la variable no está);
+  `ruff check .` y `mypy app` limpios.
 - Auditoría de la entrega y prueba de punta a punta:
-  [`docs/DELIVERY_1_AUDIT.md`](docs/DELIVERY_1_AUDIT.md) y
-  [`docs/END_TO_END_TEST_REPORT.md`](docs/END_TO_END_TEST_REPORT.md).
+  [`docs/DELIVERY_1_AUDIT.md`](docs/DELIVERY_1_AUDIT.md),
+  [`docs/END_TO_END_TEST_REPORT.md`](docs/END_TO_END_TEST_REPORT.md) y
+  [`docs/VERIFICACION_ENTREGA_2.md`](docs/VERIFICACION_ENTREGA_2.md).
 
 ## Limitaciones conocidas
 
@@ -408,7 +458,22 @@ Todo el proceso, en el orden correcto y con la evidencia en `var/audit/verificac
   el LLM local es opcional y solo interpreta respuestas libres. No decide reglas.
 - La aprobación y la certificación humanas no vienen en el contrato: la interfaz es
   propia (API + CLI + consola). G2/G3 están desactivadas en la rúbrica y se revisan a
-  mano, con el detalle del cierre y del monto en `GET /api/orders/{id}`.
+  mano, con el parte de cierre, las diferencias, el motivo y el monto en
+  `GET /api/orders/{id}` y en la consola. El procedimiento reproducible está en
+  [`docs/VERIFICACION_ENTREGA_2.md`](docs/VERIFICACION_ENTREGA_2.md).
+- El historial señala el equipo aguas arriba (filtro o tanque) cuando el patrón lo
+  justifica, pero la orden sigue siendo una sola y del equipo del evento: el sistema no
+  abre una orden sobre otro equipo. La causa raíz queda nombrada en el análisis con
+  `root_equipment`.
+- El puntuador del curso tiene un defecto en `correccion/puntuar.py`: una orden
+  `PendienteAprobacion` con `motivo` hace `bien += ok` con un string y aborta con
+  `TypeError`. La corrida local usa una copia parcheada (el resultado se envuelve en
+  `bool(...)`); sin ese parche, cualquier sistema que publique pendientes con motivo no
+  se puede puntuar. Queda documentado, no se copia en el repo.
+- F3 (sobrevive al corte de luz) mide 0 en `sin-luz` porque el apagón del escenario cae
+  cuando no hay ninguna orden pendiente; la durabilidad se demuestra con un `SIGKILL`
+  controlado (misma id y estado, sin duplicado). E1/E2 pierden la ventana del corte
+  porque el reloj de la planta corre a 1800× y el ASR tarda segundos.
 - La visión requiere clave de NVIDIA; sin ella (o sin enlace) la foto queda en cola y el
   pipeline sigue igual.
 - Las notas con solo observaciones (sin filas numéricas) no se pueden confirmar por

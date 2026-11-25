@@ -36,7 +36,8 @@ class PhotoQueue(Protocol):
 
     async def mark_failed(self, photo_id: str) -> None: ...
 
-    async def structural_damage(self, photo: str) -> bool: ...
+    async def record_usage(self, model: str, task: str, input_tokens: int, output_tokens: int,
+                           latency_ms: int, cost_usd: float = 0.0) -> None: ...
 
 
 class PhotoAnalyser:
@@ -71,15 +72,19 @@ class PhotoAnalyser:
             done += 1
         return done
 
-    async def structural_damage(self, photos: list[str]) -> bool:
-        """True when any stored verdict of these photos reports structural damage."""
-        for photo in photos:
-            if await self.queue.structural_damage(photo):
-                return True
-        return False
-
     async def _analyse(self, pht_id: str, photo: str) -> PhotoVerdict:
         image = await self.media_loader(photo)
         verdict = await self.vision.analyse(photo, image)
         await self.queue.mark_analysed(pht_id, verdict.model_dump())
+        await self._record_usage(verdict)
         return verdict
+
+    async def _record_usage(self, verdict: PhotoVerdict) -> None:
+        """One usage row per analysed photo; a storage failure cannot undo the verdict."""
+        if not verdict.model:
+            return
+        try:
+            await self.queue.record_usage(verdict.model, "vision", verdict.input_tokens,
+                                          verdict.output_tokens, verdict.latency_ms, 0.0)
+        except Exception:
+            log.warning("vision usage could not be stored", exc_info=True)

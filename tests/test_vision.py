@@ -9,7 +9,6 @@ import httpx
 import pytest
 import respx
 
-from app.vision.models import PhotoVerdict
 from app.vision.nvidia import NvidiaVision, VisionUnavailable, content_type
 from app.vision.queue import PhotoAnalyser, photo_id
 
@@ -22,8 +21,11 @@ def vision(api_key: str = "k-123", *, timeout: float = 5) -> NvidiaVision:
     return NvidiaVision("meta/llama-3.2-11b-vision-instruct", URL, api_key, timeout=timeout)
 
 
-def answer(payload: dict) -> dict:
-    return {"choices": [{"message": {"content": json.dumps(payload)}}]}
+def answer(payload: dict, usage: dict | None = None) -> dict:
+    body = {"choices": [{"message": {"content": json.dumps(payload)}}]}
+    if usage is not None:
+        body["usage"] = usage
+    return body
 
 
 VALID = {"kind": "empaquetadura", "structural_damage": False, "severity": "leve",
@@ -35,7 +37,8 @@ class FakeQueue:
         self.enqueued: list[tuple[str, str]] = []
         self.done: dict[str, dict] = {}
         self.failed: list[str] = []
-        self.damage: dict[str, bool] = {}
+        self.usage: list[dict] = []
+        self.usage_fails = False
 
     async def enqueue_photo(self, pid, photo):
         self.enqueued.append((pid, photo))
@@ -46,13 +49,15 @@ class FakeQueue:
 
     async def mark_analysed(self, pid, result):
         self.done[pid] = result
-        self.damage[result["photo"]] = result["structural_damage"]
 
     async def mark_failed(self, pid):
         self.failed.append(pid)
 
-    async def structural_damage(self, photo):
-        return self.damage.get(photo, False)
+    async def record_usage(self, model, task, input_tokens, output_tokens, latency_ms, cost_usd=0.0):
+        if self.usage_fails:
+            raise RuntimeError("usage table down")
+        self.usage.append({"model": model, "task": task, "input": input_tokens,
+                          "output": output_tokens, "latency_ms": latency_ms, "cost": cost_usd})
 
 
 async def load(_photo: str) -> bytes:
@@ -71,10 +76,13 @@ def test_content_type_from_magic_bytes():
 
 @respx.mock
 async def test_analyse_sends_the_image_and_returns_a_verdict():
-    route = respx.post(f"{URL}/chat/completions").mock(return_value=httpx.Response(200, json=answer(VALID)))
+    route = respx.post(f"{URL}/chat/completions").mock(
+        return_value=httpx.Response(200, json=answer(VALID, {"prompt_tokens": 812, "completion_tokens": 47})))
     verdict = await vision().analyse("/photos/1.jpg", JPEG)
     assert verdict.kind == "empaquetadura" and verdict.severity == "leve"
     assert verdict.deferred is False and verdict.model.startswith("meta/")
+    assert verdict.input_tokens == 812 and verdict.output_tokens == 47
+    assert verdict.latency_ms >= 0
     request = route.calls[0].request
     body = json.loads(request.content)
     assert body["model"] == "meta/llama-3.2-11b-vision-instruct"
@@ -155,14 +163,40 @@ async def test_the_photo_id_is_stable_for_a_retry():
 
 
 @respx.mock
+async def test_an_answer_without_usage_does_not_break_the_verdict():
+    for usage in (None, {}, {"prompt_tokens": None, "completion_tokens": "x"}):
+        respx.post(f"{URL}/chat/completions").mock(
+            return_value=httpx.Response(200, json=answer(VALID, usage)))
+        verdict = await vision().analyse("/photos/1.jpg", JPEG)
+        assert verdict.kind == "empaquetadura"
+        assert (verdict.input_tokens, verdict.output_tokens) == (0, 0)
+
+
+@respx.mock
 async def test_drain_analyses_the_queue_and_stores_the_verdict():
-    respx.post(f"{URL}/chat/completions").mock(return_value=httpx.Response(200, json=answer(VALID)))
+    respx.post(f"{URL}/chat/completions").mock(
+        return_value=httpx.Response(200, json=answer(VALID, {"prompt_tokens": 6400, "completion_tokens": 52})))
     queue = FakeQueue()
     await queue.enqueue_photo("p1", "/photos/1.jpg")
     analyser = PhotoAnalyser(queue, vision(), load)
     assert await analyser.drain() == 1
     assert queue.done["p1"]["photo"] == "/photos/1.jpg"
-    assert await analyser.structural_damage(["/photos/1.jpg"]) is False
+    assert len(queue.usage) == 1
+    row = queue.usage[0]
+    assert row["model"] == "meta/llama-3.2-11b-vision-instruct" and row["task"] == "vision"
+    assert (row["input"], row["output"], row["cost"]) == (6400, 52, 0.0)
+    assert row["latency_ms"] >= 0
+
+
+@respx.mock
+async def test_usage_accounting_cannot_undo_a_verdict():
+    respx.post(f"{URL}/chat/completions").mock(return_value=httpx.Response(200, json=answer(VALID)))
+    queue = FakeQueue()
+    queue.usage_fails = True
+    await queue.enqueue_photo("p1", "/photos/1.jpg")
+    analyser = PhotoAnalyser(queue, vision(), load)
+    assert await analyser.drain() == 1
+    assert queue.done["p1"]["photo"] == "/photos/1.jpg"
 
 
 @respx.mock
@@ -174,13 +208,3 @@ async def test_drain_stops_when_the_link_is_down():
     analyser = PhotoAnalyser(queue, vision(), load)
     assert await analyser.drain() == 0
     assert queue.failed == ["p1"]
-
-
-async def test_structural_damage_comes_only_from_a_stored_verdict():
-    queue = FakeQueue()
-    await queue.enqueue_photo("p1", "/photos/1.jpg")
-    await queue.mark_analysed("p1", PhotoVerdict(photo="/photos/1.jpg", structural_damage=True,
-                                                 severity="grave").model_dump())
-    analyser = PhotoAnalyser(queue, vision(), load)
-    assert await analyser.structural_damage(["/photos/1.jpg", "/photos/2.jpg"]) is True
-    assert await analyser.structural_damage(["/photos/2.jpg"]) is False

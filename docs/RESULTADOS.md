@@ -1,5 +1,76 @@
 # Resultados de la evaluación oficial
 
+## Entrega 2 · los cuatro escenarios del Anexo 2
+
+Corrida oficial del **2026-11-21 02:37** (commit `bdd2976`) con los cuatro escenarios del
+anexo, sobre el `docker-compose.yml` del repo:
+
+```bash
+ESCENARIOS="tormenta-perfecta sin-luz contratista fuga-sin-enlace" ./scripts/verificar.sh
+# equivale a
+uv run --with httpx --with pyyaml python academia2026-tp/correccion/corregir.py \
+  --repo . --alumno "Ramón Ariel" \
+  --escenarios tormenta-perfecta sin-luz contratista fuga-sin-enlace
+```
+
+Los artefactos quedan en `academia2026-tp/correccion/corridas/academiaNovit2026/`
+(`informe.md`, `resultado.json`, un JSON por escenario, los logs y `meta.json`).
+
+**91,2 / 100 · APRUEBA** (mínimo 60). **Sin faltas eliminatorias.**
+
+| Criterio | Peso | Valor | Puntos |
+|---|---:|---:|---:|
+| A1 Cobertura | 5 | 100 % | 5,00 |
+| A2 Borrador al primer intento | 10 | 75 % | 7,50 |
+| A3 Parte final correcto | 8 | 86 % | 6,89 |
+| A4a Pregunta cuando hace falta | 4 | 100 % | 4,00 |
+| A4b No pregunta de más | 3 | 99 % | 2,96 |
+| B1 Sin novedad / Escalado | 10 | 97 % | 9,73 |
+| B2 Alerta de seguridad | 10 | 100 % | 10,00 |
+| D1 Reglas de aprobación | 15 | 100 % | 15,00 |
+| D2 Orden adecuada a la falla | 10 | 100 % | 10,00 |
+| E1 Sigue andando sin enlace | 3 | 50 % | 1,50 |
+| E2 Pendientes visibles | 3 | 75 % | 2,25 |
+| E3 Sin duplicados | 4 | 100 % | 4,00 |
+| F1 Mensajes válidos | 2 | 100 % | 2,00 |
+| F2 Latido | 1 | 99 % | 0,99 |
+| F3 Sobrevive al corte de luz | 2 | **0 %** | 0,00 |
+| G1 Orden ejecutada | 3 | 100 % | 3,00 |
+| G2 Cierre propio | 2 | inactivo | – |
+| G3 Certificación de la contratista | 5 | inactivo | – |
+
+Detalle por escenario (de `resultado.json`):
+
+- **D1**: tormenta-perfecta 3 órdenes decididas, sin-luz 2, contratista 3; todas
+  Aprobada o Pendiente según las cinco reglas, con motivo en las pendientes.
+  `fuga-sin-enlace` no decidió órdenes.
+- **D2**: una falla por escenario, con orden sobre el equipo correcto — F02-B-102 en
+  tormenta, F07-F-201B en sin-luz, F03-B-101 en contratista.
+- **G1**: un cierre en tormenta y otro en sin-luz (F-201A, `T-F-CAR`, trabajo propio);
+  las dos órdenes pasaron a `Ejecutada`. La corrida de contratista no recibió cierres.
+- **F3**: el apagón de `sin-luz` cae cuando no había ninguna orden pendiente antes del
+  corte, así que el criterio mide 0 por el guion, no por el sistema. La durabilidad se
+  demuestra aparte con un corte controlado del contenedor (misma id y estado, sin
+  duplicado) — ver [`VERIFICACION_ENTREGA_2.md`](VERIFICACION_ENTREGA_2.md).
+- **E1/E2**: en tormenta-perfecta el reloj de la planta corre a 1800× durante el corte y
+  las notas caen en segundos reales: la tablet no llega a responder dentro de la ventana.
+  En `fuga-sin-enlace` la nota del corte sí se respondió (1/1) y los pendientes se
+  avisaron.
+
+**Nota sobre el puntuador.** La copia local del corrector lleva un parche sin commitear en
+`correccion/puntuar.py`: cuando una orden `PendienteAprobacion` trae `motivo`, la expresión
+original `bien += ok` recibe un string y aborta con `TypeError`. El parche envuelve el
+resultado en `bool(...)`; sin él, esta corrida (que sí publica pendientes con motivo) no se
+puede puntuar. La copia pública del corrector todavía no lo corrige.
+
+**Pruebas y verificación.** 302 pruebas (301 sin la integración contra Postgres), `ruff` y
+`mypy` limpios; presupuesto de recursos, RAG y punta a punta del `scripts/verificar.sh`.
+La matriz requisito por requisito de esta entrega, la demostración manual de G2/G3 y el
+corte controlado de durabilidad están en
+[`VERIFICACION_ENTREGA_2.md`](VERIFICACION_ENTREGA_2.md).
+
+## Entrega 1 · escenarios obligatorios
+
 Corrida ejecutada con la planta en modo corrección y el sistema levantado desde el
 `docker-compose.yml` del repo:
 

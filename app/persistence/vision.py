@@ -44,8 +44,3 @@ class PhotoQueueRepository(DbRepository):
             (MAX_ATTEMPTS, photo_id),
         )
 
-    async def structural_damage(self, photo: str) -> bool:
-        row = await self.db.fetchrow(
-            "SELECT result FROM photo_analysis WHERE photo = %s AND status = 'done'", (photo,),
-        )
-        return bool(row and (row["result"] or {}).get("structural_damage"))

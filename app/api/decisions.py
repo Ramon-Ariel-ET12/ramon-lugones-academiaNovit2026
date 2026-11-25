@@ -42,6 +42,9 @@ class DecisionRequest(StrictModel):
     actor: str = Field(min_length=2, max_length=80)
     motive: str | None = Field(default=None, max_length=500)
     habilita: str | None = Field(default=None, max_length=40)
+    # What the contractor says was invoiced. It is only used to show the difference
+    # against the contract; the habilita amount never comes from it.
+    monto_declarado: float | None = Field(default=None, ge=0)
 
 
 @router.get("")
@@ -70,7 +73,7 @@ async def decide(order_id: str, body: DecisionRequest) -> dict[str, Any]:
     try:
         result = await service().decide(
             order_id, role=body.role, action=body.action, actor=body.actor,
-            motive=body.motive, habilita=body.habilita,
+            motive=body.motive, habilita=body.habilita, declared_amount=body.monto_declarado,
         )
     except DecisionError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc

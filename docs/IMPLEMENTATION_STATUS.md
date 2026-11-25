@@ -1,5 +1,11 @@
 # Estado de implementación · Entrega 1
 
+> **Actualización Entrega 2.** Este archivo es el snapshot de la Entrega 1. La Entrega 2
+> está implementada y verificada en [`VERIFICACION_ENTREGA_2.md`](VERIFICACION_ENTREGA_2.md):
+> workflow, análisis citado, órdenes, reglas, decisión humana, durabilidad, visión y
+> cierre/certificación. Con eso quedan cerradas las limitaciones de G2/G3 y de `mypy` que
+> figuran al final de este documento; la suite pasó a 302 pruebas.
+
 Este archivo es el resumen de estado. La matriz completa requisito por requisito, con el
 método de verificación y la evidencia de cada fila, está en
 [`DELIVERY_1_AUDIT.md`](DELIVERY_1_AUDIT.md). La prueba de punta a punta con el operador
@@ -65,11 +71,13 @@ del corrector y sin variables de entorno. Corridas anteriores: 88,8 / 89,2 / 82,
   por las mismas 3 CPU que el ASR. En la corrida medida la alerta S1 salió a los 20,4 s
   (límite 30 s).
 - La central de aprobación/certificación (G2/G3) y las decisiones del planificador no
-  tienen canal en el contrato: corresponden a la Entrega 2.
+  tienen canal en el contrato: corresponden a la Entrega 2. **Ya implementadas** (API, CLI
+  y consola, con roles y durabilidad); ver `VERIFICACION_ENTREGA_2.md`.
 - `mypy` está configurado pero no se usa como puerta de calidad; la puerta del proyecto es
-  `ruff`, que pasa.
+  `ruff`, que pasa. **Desde la Entrega 2** `mypy app` también corre en CI y está limpio.
 - D1/D2/F3/G1 no se pueden medir con los dos escenarios obligatorios; requieren
-  `sin-luz`, `contratista` o `tormenta-perfecta`.
+  `sin-luz`, `contratista` o `tormenta-perfecta`. **Medidos en la Entrega 2**: D1, D2 y G1
+  al 100 %; F3 depende del guion del escenario y se demuestra con un corte controlado.
 - El puntuador oficial tiene un defecto reproducible: una orden `PendienteAprobacion` con
   `motivo` hace `bien += ok` con un string y aborta la corrección con `TypeError`. Con los
   dos escenarios obligatorios este sistema no publica órdenes, así que no se dispara.

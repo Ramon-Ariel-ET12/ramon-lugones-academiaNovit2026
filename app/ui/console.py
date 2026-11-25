@@ -46,24 +46,45 @@ def _causes(row: dict) -> str:
 
 
 def _differences(row: dict) -> str:
+    part = row.get("parte")
+    if isinstance(part, str):
+        try:
+            part = json.loads(part)
+        except ValueError:
+            part = None
+    part_html = ""
+    if isinstance(part, dict) and part:
+        tasks = ", ".join(str(task) for task in part.get("tasks_done") or []) or "—"
+        hours = part.get("hours")
+        proof = part.get("test_result")
+        part_html = (
+            f"<div><b>Parte de cierre</b> tareas: {_esc(tasks)} · "
+            f"horas: {_esc('—' if hours is None else hours)} · "
+            f"prueba: {_esc(proof or '—')}</div>"
+        )
     differences = row.get("diferencias") or []
     if not differences:
-        return ""
+        return part_html
     items = "".join(f"<li>{html.escape(str(difference.get('kind') or ''))}: "
                     f"{html.escape(str(difference.get('detail') or ''))}</li>" for difference in differences)
     amount = row.get("monto_habilita_usd")
     extra = f" <small>· contrato: USD {amount:.0f}</small>" if amount is not None else ""
-    return f"<div><b>Diferencias del cierre</b>{extra}<ul>{items}</ul></div>"
+    return f"{part_html}<div><b>Diferencias del cierre</b>{extra}<ul>{items}</ul></div>"
 
 
 def _next_command(row: dict) -> str:
+    """The command that is valid for this state and executor, not every command."""
     order_id = row["id"]
     state = row.get("state")
+    payload = row.get("payload") or {}
+    executor = str(payload.get("ejecutor") or "propio")
     if state == "PendienteAprobacion":
         return f'aprobar {order_id} --actor "..."   ·   rechazar {order_id} --actor "..." --motivo "..."'
-    if state in ("Aprobada", "Ejecutada", "Observada"):
-        return (f'cerrar {order_id} --actor "..."   ·   certificar {order_id} --actor "..." '
-                f'--habilita HAB-AAAA-NNNN   ·   observar {order_id} --actor "..." --motivo "..."')
+    if state == "Ejecutada" and executor == "propio":
+        return f'cerrar {order_id} --actor "..."'
+    if state in ("Ejecutada", "Observada") and executor != "propio":
+        return (f'certificar {order_id} --actor "..." --habilita HAB-AAAA-NNNN [--monto N]   ·   '
+                f'observar {order_id} --actor "..." --motivo "..."')
     return ""
 
 
@@ -74,12 +95,12 @@ def _review_section(data: dict) -> str:
     cards = []
     for row in rows:
         command = _next_command(row)
+        payload = row.get("payload") or {}
         hint = (f'<p><code>python scripts/orden.py {html.escape(command)}</code></p>' if command else "")
+        motive = f'<br><small>motivo: {_esc(payload.get("motivo"))}</small>' if payload.get("motivo") else ""
         cards.append(
             f"<li><b>{_esc(row['id'])}</b> · {_esc(row['equipment'])} · <b>{_esc(row['state'])}</b> "
-            f"{_esc(row['tasks'])}"
-            f"{'<br><small>motivo: ' + _esc(row['payload'].get('motivo')) + '</small>' if row['payload'].get('motivo') else ''}"
-            f"{_causes(row)}{_differences(row)}{hint}</li>"
+            f"{_esc(row['tasks'])}{motive}{_causes(row)}{_differences(row)}{hint}</li>"
         )
     return f"<h2>Órdenes para decidir</h2><ul>{''.join(cards)}</ul>"
 

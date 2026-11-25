@@ -11,7 +11,9 @@ import asyncio
 import base64
 import json
 import logging
+import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 import httpx
 
@@ -44,6 +46,27 @@ MAX_ATTEMPTS = 2
 
 class VisionUnavailable(RuntimeError):
     """The photo could not be analysed now: no model, no link, or an unusable answer."""
+
+
+@dataclass(frozen=True)
+class Reply:
+    """One usable answer, with the token counts the API reported for it."""
+
+    content: str
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+
+def _number(value) -> int:
+    """A token count from the response, or 0 when the provider did not report it."""
+    return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+
+def _usage(body: dict) -> tuple[int, int]:
+    usage = body.get("usage")
+    if not isinstance(usage, dict):
+        return 0, 0
+    return _number(usage.get("prompt_tokens")), _number(usage.get("completion_tokens"))
 
 
 def content_type(image: bytes) -> str | None:
@@ -90,6 +113,7 @@ class NvidiaVision:
             }],
         }
         last: Exception | None = None
+        started = time.monotonic()
         for attempt in range(MAX_ATTEMPTS):
             try:
                 answer = await self._post(payload)
@@ -102,23 +126,28 @@ class NvidiaVision:
             except (httpx.HTTPError, httpx.TimeoutException) as exc:
                 last = exc
             else:
-                return self._verdict(photo, answer)
+                return self._verdict(photo, answer.content, input_tokens=answer.input_tokens,
+                                     output_tokens=answer.output_tokens,
+                                     latency_ms=int((time.monotonic() - started) * 1000))
             if attempt + 1 < MAX_ATTEMPTS:
                 await asyncio.sleep(0.5 * (2 ** attempt))
         raise VisionUnavailable(f"el modelo de visión no respondió: {last}") from last
 
-    async def _post(self, payload: dict) -> str:
+    async def _post(self, payload: dict) -> Reply:
         async with self.client_factory() as client:
             response = await client.post(f"{self.base_url}/chat/completions", json=payload,
                                          headers={"Authorization": f"Bearer {self.api_key}"})
             response.raise_for_status()
             body = response.json()
         try:
-            return str(body["choices"][0]["message"]["content"])
+            content = str(body["choices"][0]["message"]["content"])
         except (KeyError, IndexError, TypeError) as exc:
             raise VisionUnavailable("respuesta del modelo sin contenido") from exc
+        input_tokens, output_tokens = _usage(body)
+        return Reply(content=content, input_tokens=input_tokens, output_tokens=output_tokens)
 
-    def _verdict(self, photo: str, answer: str) -> PhotoVerdict:
+    def _verdict(self, photo: str, answer: str, *, input_tokens: int = 0, output_tokens: int = 0,
+                 latency_ms: int = 0) -> PhotoVerdict:
         """Parse the JSON out of a chat answer. A malformed answer is never a verdict."""
         start = answer.find("{")
         if start < 0:
@@ -133,6 +162,7 @@ class NvidiaVision:
         if unknown:
             raise VisionUnavailable(f"el modelo de visión devolvió campos no pedidos: {sorted(unknown)}")
         try:
-            return PhotoVerdict(photo=photo, model=self.model, **data)
+            return PhotoVerdict(photo=photo, model=self.model, input_tokens=input_tokens,
+                                output_tokens=output_tokens, latency_ms=latency_ms, **data)
         except Exception as exc:  # pydantic rejects the shape
             raise VisionUnavailable(f"veredicto de visión inválido: {exc}") from exc

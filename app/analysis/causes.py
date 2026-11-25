@@ -62,8 +62,6 @@ def _details(symptoms: list[Symptom], *names: str) -> list[str]:
 # window range is deliberately NOT used: a slow level change looks exactly the same.
 PULSATION_STEP = 1.0
 PULSATION_MIN_SAMPLES = 5
-# F03/F04: the oil temperature rising inside the window is a signature even under the alarm.
-OIL_TEMPERATURE_RISE = 8.0
 
 
 def _pulsating(symptoms: list[Symptom], trend: dict[str, dict] | None) -> bool:
@@ -84,7 +82,7 @@ def _pulsating(symptoms: list[Symptom], trend: dict[str, dict] | None) -> bool:
 
 
 def _cause(code: str, *, confidence: str, evidence: list[str], missing: list[str],
-           equipment: str, task: str | None = None, needs_inspection: bool = False,
+           task: str | None = None, needs_inspection: bool = False,
            root_equipment: str | None = None) -> Cause:
     return Cause(
         code=code,
@@ -133,31 +131,31 @@ def rank_causes(equipment: str, symptoms: list[Symptom], trend: dict[str, dict] 
     if drip:
         causes.append(_cause("F01", confidence="alta",
                              evidence=[*_details(symptoms, "goteo"), "goteo informado en la recorrida"],
-                             missing=[], equipment=equipment))
+                             missing=[]))
     if belts:
         causes.append(_cause("F05", confidence="alta",
                              evidence=[*_details(symptoms, "correas"), "correas en mal estado en la recorrida"],
-                             missing=[], equipment=equipment))
+                             missing=[]))
     if low_oil:
         causes.append(_cause("F04", confidence="alta",
                              evidence=[*_details(symptoms, "aceite_bajo"), "nivel bajo en el visor"],
-                             missing=[], equipment=equipment))
+                             missing=[]))
     if hot_oil and not vibration:
         causes.append(_cause("F04", confidence="media",
                              evidence=_details(symptoms, "temperatura_aceite_alta"),
                              missing=["confirmar el nivel del visor de aceite"],
-                             equipment=equipment))
+                             ))
 
     # Filters: the differential is the measurement, and §7.5/§7.6 separate high from low.
     if diff_high:
         causes.append(_cause("F07", confidence="alta",
                              evidence=_details(symptoms, "diferencial_alto"),
-                             missing=[], equipment=equipment))
+                             missing=[]))
     if diff_low:
         causes.append(_cause("F08", confidence="alta",
                              evidence=_details(symptoms, "diferencial_bajo"),
                              missing=["verificar el manómetro local antes de cambiar cartuchos"],
-                             equipment=equipment))
+                             ))
 
     # Vibration: §7.1 is the differential table. The order depends on what else is there.
     if vibration and part_normal and not (drip or belts or low_oil or hot_oil or suction):
@@ -165,33 +163,33 @@ def rank_causes(equipment: str, symptoms: list[Symptom], trend: dict[str, dict] 
         causes.append(_cause("F10", confidence="alta",
                              evidence=[*_details(symptoms, "vibracion_alta"), "la recorrida no encontró la vibración"],
                              missing=["cruzar la lectura del sensor con el colector"],
-                             equipment=equipment))
+                             ))
     elif vibration:
         if suction:
             causes.append(_cause("F09", confidence="media",
                                  evidence=_details(symptoms, "vibracion_alta", "presion_succion_baja"),
                                  missing=["confirmar la presión de succión en el resto de las bombas",
                                           "verificar el nivel del TK-301"],
-                                 equipment=equipment, root_equipment="F-201A"))
+                                 root_equipment="F-201A"))
         if hot_oil:
             causes.append(_cause("F03", confidence="alta",
                                  evidence=_details(symptoms, "vibracion_alta", "temperatura_aceite_alta"),
                                  missing=["medir la temperatura del rodamiento con la pistola"],
-                                 equipment=equipment))
+                                 ))
         elif _pulsating(symptoms, trend):
             causes.append(_cause("F02", confidence="alta",
                                  evidence=[*_details(symptoms, "vibracion_alta", "caudal_bajo"), "la presión de descarga oscila"],
                                  missing=["confirmar la pulsación con el manómetro local"],
-                                 equipment=equipment))
+                                 ))
         else:
             causes.append(_cause("F06", confidence="baja",
                                  evidence=_details(symptoms, "vibracion_alta"),
                                  missing=["verificar el acople y el elastómero con la guarda abierta"],
-                                 equipment=equipment))
+                                 ))
             causes.append(_cause("F03", confidence="baja",
                                  evidence=_details(symptoms, "vibracion_alta"),
                                  missing=["seguir la tendencia de vibración y la temperatura de aceite"],
-                                 equipment=equipment))
+                                 ))
 
     # Low suction with no vibration: §7.4. All pumps low points at the filter, one pump
     # at its suction valve; without the rest of the plant, it is an inspection.
@@ -199,7 +197,7 @@ def rank_causes(equipment: str, symptoms: list[Symptom], trend: dict[str, dict] 
         causes.append(_cause("F07", confidence="media",
                              evidence=_details(symptoms, "presion_succion_baja"),
                              missing=["comparar la succión de las tres bombas y el ΔP del filtro"],
-                             equipment=equipment))
+                             ))
 
     if state:
         causes.append(_inspection("equipo parado o disparado",
@@ -216,7 +214,7 @@ def rank_causes(equipment: str, symptoms: list[Symptom], trend: dict[str, dict] 
         causes.append(_cause("F10", confidence="baja",
                              evidence=_details(symptoms, "vibracion_alta"),
                              missing=["cruzar la lectura del sensor con la recorrida"],
-                             equipment=equipment))
+                             ))
 
     if not causes and symptoms:
         cited = DIFFERENTIAL_CITATION.get(symptoms[0].name, "MBP-4 §6.2")
@@ -240,5 +238,9 @@ def tasks_for(causes: list[Cause], equipment: str, materials: Materials) -> list
         return []
     repair = top.task_code if top.confidence == "alta" else None
     task = repair or (top.task_code if top.needs_inspection else None) or "I-VIB"
+    if task == "NO-ESTANDAR":
+        # The Anexo allows a task the catalogue does not have (a plunger, a pinion seal):
+        # the planner approves it explicitly, it is never auto-approved.
+        return [task]
     # Only codes the catalogue actually has: an invented code would make the order lie.
     return [task] if materials.task(task, equipment) is not None else []

@@ -33,8 +33,13 @@ from app.publisher import Publisher
 from app.rag.context import build_event_context
 from app.vision.queue import PhotoAnalyser
 from app.workflow.pipeline import OrderPipeline
+from app.workflow.router import route_note
 
 log = logging.getLogger(__name__)
+
+# Closures only move an order that was already authorised: a pending order is the
+# planner's to decide, and work cannot be closed before it is approved.
+CLOSURE_STATES = {"Aprobada", "Ejecutada", "Observada"}
 
 
 class NoteWorkflow:
@@ -179,7 +184,7 @@ class NoteWorkflow:
         draft = self.agent.analyze(transcript, note.id, note.ts, note.fotos)
         await self._record_step("parse", (time.monotonic() - started) * 1000)
 
-        if draft.safety:
+        if route_note(safety=draft.safety) == "seguridad":
             await self._handle_safety(note, draft, deadline)
             return
         if not draft.rows and not draft.ambiguities:
@@ -607,11 +612,13 @@ class NoteWorkflow:
             return
         try:
             evidence = await build_event_context(event, rows, photos, self.plant, self.search, self.snapshot,
-                                                 self.materials)
+                                                 self.materials, include_history=False)
         except Exception:
             log.warning("event context for %s could not be built", event["id"], exc_info=True)
             return
-        for key in ("sections", "sensor_trend", "order_history", "available_parts"):
+        # The history is analysis input, not event evidence: its conclusions are stored in
+        # order_analysis and the archive would add ~90 KB to every event row.
+        for key in ("sections", "sensor_trend", "available_parts"):
             if evidence.get(key):
                 context[key] = evidence[key]
         try:
@@ -702,6 +709,14 @@ class NoteWorkflow:
         if not row:
             log.warning("closure for unknown order %s", closure.orden_id)
             return
+        current = str((row.get("payload") or {}).get("estado") or row.get("state") or "")
+        if current not in CLOSURE_STATES:
+            # The technician cannot close an order the planner has not approved: the work
+            # was not authorised and moving it to Ejecutada would make it disappear from
+            # the planner's list. The closure is not consumed, so a retry after the
+            # decision still finds it.
+            log.warning("closure for %s ignored: the order is %s", closure.orden_id, current or "unknown")
+            return
         if await self.repo.get_closure(closure.orden_id) is not None:
             log.info("closure for %s already processed", closure.orden_id)
             return
@@ -710,16 +725,20 @@ class NoteWorkflow:
         parts = parse_closure(transcript, orden_id=closure.orden_id, tecnico=closure.tecnico,
                               empresa=closure.empresa, materials=self.materials)
         correlation = (await self.repo.get_analysis(closure.orden_id) or {}).get("correlation_id")
+        comparison = None
         if self.prices is not None:
             comparison = compare(dict(row["payload"]), parts, self.materials, self.prices,
                                  started_at=(row["payload"].get("ts") or "")[:10])
-            await self.repo.save_closure(
-                closure.orden_id, closure.id, transcript, list(parts.parts_used),
-                [difference.model_dump() for difference in comparison.differences],
-                correlation_id=correlation, monto=comparison.monto_habilita_usd,
-            )
-            for difference in comparison.differences:
-                log.warning("closure %s: %s (%s)", closure.orden_id, difference.kind, difference.detail)
+        differences = [difference.model_dump() for difference in comparison.differences] if comparison else []
+        # The part is persisted even when the price list is unavailable: what the
+        # technician did is evidence of the work, not of the contract's prices.
+        await self.repo.save_closure(
+            closure.orden_id, closure.id, transcript, list(parts.parts_used), differences,
+            correlation_id=correlation, monto=comparison.monto_habilita_usd if comparison else None,
+            parte=parts.model_dump(),
+        )
+        for difference in differences:
+            log.warning("closure %s: %s (%s)", closure.orden_id, difference["kind"], difference["detail"])
         payload_order = dict(row["payload"])
         payload_order["ts"] = datetime.now(UTC).isoformat()
         payload_order["estado"] = "Ejecutada"

@@ -7,6 +7,7 @@ orders and available parts, with no LLM in the loop.
 
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta
 from itertools import pairwise
 from statistics import mean
@@ -15,6 +16,13 @@ from app.domain.materials import Materials
 from app.domain.models import ExtractedRow, PlantSnapshot
 from app.integrations.plant_api import PlantClient
 from app.rag.search import ManualSearch
+
+log = logging.getLogger(__name__)
+
+# How many jobs of the plant's history one event looks at. The recurring patterns need
+# the other pumps and both filters, so the query is not filtered by equipment; the cap is
+# only a bound for the context, and it keeps the most recent jobs.
+ORDER_HISTORY_LIMIT = 250
 
 # How many samples the oscillation estimate looks at: enough to see a pulsation, short
 # enough that a slow level change in the window does not look like one.
@@ -32,6 +40,12 @@ def _query_for(equipment: str, rows: list[ExtractedRow], snapshot: PlantSnapshot
     return " ".join(parts)
 
 
+def _recent_orders(orders: list[dict], limit: int = ORDER_HISTORY_LIMIT) -> list[dict]:
+    """The most recent jobs, bounded. The ISO text sorts lexicographically (same offset)."""
+    dated = sorted(orders, key=lambda order: str(order.get("fecha_aviso") or order.get("fecha") or ""))
+    return dated[-limit:] if limit > 0 else dated
+
+
 async def sensor_trend(plant: PlantClient, snapshot: PlantSnapshot, equipment: str | None,
                        hours: int = 6) -> dict:
     """Recent trend per sensor of one equipment (last hours), for the escalated event."""
@@ -40,7 +54,8 @@ async def sensor_trend(plant: PlantClient, snapshot: PlantSnapshot, equipment: s
     try:
         state = await plant.state()
         now = datetime.fromisoformat(state["ts"])
-    except Exception:  # noqa: BLE001
+    except Exception:
+        log.warning("plant state unavailable: using the host clock for the trend", exc_info=True)
         now = datetime.now().astimezone()
     trend: dict[str, dict] = {}
     for key in snapshot.limits:
@@ -50,7 +65,8 @@ async def sensor_trend(plant: PlantClient, snapshot: PlantSnapshot, equipment: s
         try:
             samples = await plant.historian(tag, variable, desde=(now - timedelta(hours=hours)).isoformat(),
                                             hasta=now.isoformat())
-        except Exception:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001
+            log.warning("historian %s/%s unavailable: %s", tag, variable, exc)
             continue
         values = [item["valor"] for item in samples if item.get("valor") is not None]
         if not values:
@@ -73,7 +89,7 @@ async def sensor_trend(plant: PlantClient, snapshot: PlantSnapshot, equipment: s
 
 async def build_event_context(event: dict, rows: list[ExtractedRow], photos: list[str],
                               plant: PlantClient, search: ManualSearch | None, snapshot: PlantSnapshot,
-                              materials: Materials | None) -> dict:
+                              materials: Materials | None, *, include_history: bool = True) -> dict:
     equipment = event.get("equipo")
     context: dict = {"event": event, "rows": [row.model_dump() for row in rows], "photos": photos}
     if not equipment:
@@ -84,10 +100,17 @@ async def build_event_context(event: dict, rows: list[ExtractedRow], photos: lis
             context["sections"] = await search.search(_query_for(equipment, rows, snapshot), 6)
         except Exception:  # noqa: BLE001
             context["sections"] = []
-    try:
-        history = await plant.order_history(equipment)
-        context["order_history"] = history[-5:]
-    except Exception:  # noqa: BLE001
+    if include_history:
+        try:
+            # One unfiltered call: the five recurring cases need the other pumps and the two
+            # filters, not only this equipment's last five jobs.
+            history = await plant.order_history()
+            context["order_history"] = _recent_orders(history)
+        except Exception:  # noqa: BLE001
+            context["order_history"] = []
+    else:
+        # Storing the whole archive in the event row would add ~90 KB per escalation and
+        # the console never shows it; the conclusions live in order_analysis.
         context["order_history"] = []
     if materials is not None:
         context["available_parts"] = [

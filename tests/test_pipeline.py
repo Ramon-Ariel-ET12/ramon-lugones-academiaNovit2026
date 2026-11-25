@@ -7,8 +7,6 @@ only the plant, the repository and the publisher doubled.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from app.analysis.review import CorpusCitations
@@ -18,12 +16,10 @@ from app.domain.rules import PlantState
 from app.workflow.pipeline import OrderPipeline
 from tests import fakes
 
-CORPUS = Path(__file__).resolve().parent.parent / "academia2026-tp" / "datos" / "documentos" / "fragmentos.jsonl"
-
 
 @pytest.fixture(scope="module")
-def citations() -> CorpusCitations:
-    return CorpusCitations.bundled(CORPUS)
+def citations(corpus_path) -> CorpusCitations:
+    return CorpusCitations.bundled(corpus_path)
 
 
 def pipeline(snapshot, materials, citations, plant=None) -> tuple[OrderPipeline, fakes.FakeRepository, fakes.FakePublisher]:
@@ -90,7 +86,8 @@ async def test_a_filter_with_cartridges_pending_for_stock(snapshot, materials, c
         link_ok=True)
     assert result is not None
     assert result["tareas"] == ["T-F-CAR"]
-    assert result["estado"] in ("Aprobada", "PendienteAprobacion")
+    assert result["estado"] == "PendienteAprobacion"
+    assert "sin stock de FC-CART-10" in (result["motivo"] or "")
 
 
 async def test_a_pump_that_stops_without_a_reserve_reduces_injection(snapshot, materials, citations):

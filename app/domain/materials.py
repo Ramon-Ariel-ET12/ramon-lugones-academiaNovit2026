@@ -7,6 +7,10 @@ from pathlib import Path
 import yaml
 from pydantic import BaseModel, ConfigDict, Field
 
+# A task's part without an explicit quantity is one unit. One value for the whole system:
+# a zero here would price and stock-check the order as if it needed nothing.
+DEFAULT_PART_QUANTITY = 1.0
+
 
 class SparePart(BaseModel):
     model_config = ConfigDict(extra="ignore")

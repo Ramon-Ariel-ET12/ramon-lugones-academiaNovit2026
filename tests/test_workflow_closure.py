@@ -44,10 +44,10 @@ class ClosureRepo(fakes.FakeRepository):
                                                 "payload": dict(self.order)}
 
     async def save_closure(self, orden_id, nota_id, transcript, parts, differences, *, correlation_id=None,
-                           monto=None):
+                           monto=None, parte=None):
         self.closure = {"orden_id": orden_id, "nota_id": nota_id, "transcript": transcript,
                         "parts": parts, "differences": differences, "correlation_id": correlation_id,
-                        "monto": monto}
+                        "monto": monto, "parte": parte}
 
     async def get_closure(self, orden_id):
         return self.closure
@@ -66,16 +66,15 @@ async def workflow_with(repo, materials, *, text: str = CERT, prices=None) -> No
                          prices=prices)
 
 
-def prices() -> PriceList:
-    from pathlib import Path
-
-    contract = Path(__file__).resolve().parent.parent / "academia2026-tp" / "datos" / "documentos" / "contrato" / "CT-SVP-2025.md"
+@pytest.fixture(scope="module")
+def price_list(plant_dir) -> PriceList:
+    contract = plant_dir / "datos" / "documentos" / "contrato" / "CT-SVP-2025.md"
     return PriceList.from_markdown(contract.read_text(encoding="utf-8"))
 
 
-async def test_the_closure_is_transcribed_compared_and_the_order_executed(materials):
+async def test_the_closure_is_transcribed_compared_and_the_order_executed(materials, price_list):
     repo = ClosureRepo(dict(ORDER_PAYLOAD))
-    workflow = await workflow_with(repo, materials, prices=prices())
+    workflow = await workflow_with(repo, materials, prices=price_list)
     await workflow.handle_closure({"id": "CIERRE-OT-1", "ts": "2026-11-05T18:00:00-03:00",
                                    "orden_id": "OT-1", "tecnico": "Lucas", "empresa": "propio",
                                    "audio_url": "/media/audios/CIERRE-OT-1.wav", "fotos": []})
@@ -84,11 +83,13 @@ async def test_the_closure_is_transcribed_compared_and_the_order_executed(materi
     assert repo.closure["transcript"].startswith("Cierro la orden")
     assert repo.closure["monto"] == pytest.approx(320.0)
     assert repo.closure["correlation_id"] == "E1"
+    assert repo.closure["parte"]["tasks_done"] == ["I-VIB"]
+    assert repo.closure["parte"]["hours"] == pytest.approx(3.0)
 
 
-async def test_a_second_delivery_of_the_same_closure_does_nothing(materials):
+async def test_a_second_delivery_of_the_same_closure_does_nothing(materials, price_list):
     repo = ClosureRepo(dict(ORDER_PAYLOAD))
-    workflow = await workflow_with(repo, materials, prices=prices())
+    workflow = await workflow_with(repo, materials, prices=price_list)
     payload = {"id": "CIERRE-OT-1", "ts": "2026-11-05T18:00:00-03:00", "orden_id": "OT-1",
                "tecnico": "Lucas", "empresa": "propio", "audio_url": "/x.wav", "fotos": []}
     await workflow.handle_closure(payload)
@@ -99,14 +100,27 @@ async def test_a_second_delivery_of_the_same_closure_does_nothing(materials):
     assert repo.closure == first
 
 
-async def test_a_closure_for_an_unknown_order_is_ignored(materials):
+async def test_a_closure_for_an_unknown_order_is_ignored(materials, price_list):
     repo = ClosureRepo(None)
-    workflow = await workflow_with(repo, materials, prices=prices())
+    workflow = await workflow_with(repo, materials, prices=price_list)
     await workflow.handle_closure({"id": "CIERRE-X", "ts": "2026-11-05T18:00:00-03:00",
                                    "orden_id": "OT-NO", "tecnico": "Lucas", "empresa": "propio",
                                    "audio_url": None, "fotos": []})
     assert repo.closure is None
     assert repo.orders == {}
+
+
+async def test_a_closure_cannot_move_an_order_the_planner_has_not_approved(materials, price_list):
+    """Only an authorised order can be executed: a pending one stays with the planner."""
+    pending = dict(ORDER_PAYLOAD, estado="PendienteAprobacion", motivo="sin reserva")
+    repo = ClosureRepo(pending)
+    workflow = await workflow_with(repo, materials, prices=price_list)
+    await workflow.handle_closure({"id": "CIERRE-OT-1", "ts": "2026-11-05T18:00:00-03:00",
+                                   "orden_id": "OT-1", "tecnico": "Lucas", "empresa": "propio",
+                                   "audio_url": "/x.wav", "fotos": []})
+    assert repo.closure is None
+    assert repo.orders == {}
+    assert workflow.transcriber.calls == 0, "the note must not even be transcribed"
 
 
 async def test_without_a_price_list_the_order_still_closes(materials):
@@ -116,7 +130,10 @@ async def test_without_a_price_list_the_order_still_closes(materials):
                                    "orden_id": "OT-1", "tecnico": "Lucas", "empresa": "propio",
                                    "audio_url": "/x.wav", "fotos": []})
     assert repo.orders["OT-1"]["state"] == "Ejecutada"
-    assert repo.closure is None
+    # The part is evidence of the work even when the contract price list is unavailable.
+    assert repo.closure is not None
+    assert repo.closure["parte"]["tasks_done"] == ["I-VIB"]
+    assert repo.closure["monto"] is None
 
 
 # ------------------------------------------------------------------ structural damage

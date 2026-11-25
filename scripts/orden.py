@@ -52,6 +52,8 @@ def main(argv: list[str] | None = None) -> int:
         action.add_argument("--actor", required=True, help="quién decide")
         action.add_argument("--motivo", default=None)
         action.add_argument("--habilita", default=None, help="número de habilitación (certificar)")
+        action.add_argument("--monto", type=float, default=None,
+                            help="monto que declara la contratista, para marcar la diferencia (certificar)")
 
     args = parser.parse_args(argv)
 
@@ -63,6 +65,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             body = {"role": ROLES[args.comando], "action": ACTIONS[args.comando], "actor": args.actor,
                     "motive": args.motivo, "habilita": args.habilita}
+            if args.monto is not None:
+                body["monto_declarado"] = args.monto
             response = client.post(f"/api/orders/{args.orden}/decision", json=body)
         try:
             _print(response.json())

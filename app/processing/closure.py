@@ -12,24 +12,14 @@ import re
 
 from app.domain.billing import PriceList
 from app.domain.closure import ClosureComparison, ClosurePart, Difference
-from app.domain.materials import Materials
-from app.domain.numbers import parse_numbers, tokenize
+from app.domain.materials import DEFAULT_PART_QUANTITY, Materials
+from app.domain.numbers import normalize_text, parse_numbers, tokenize
 
 # A gross overrun of the included hours is the documented "extra horas" difference; a
 # couple of tenths over is normal field rounding and would only add noise.
 HOURS_OVERRUN = 0.50
 # Cents of rounding in a declared amount are not a difference.
 AMOUNT_TOLERANCE_USD = 1.0
-PROOF_WORDS = ("sin perdida", "sin perdidas", "normal", "quedo en servicio", "probado")
-DECLARED_WORDS = ("un", "una", "uno", "juego", "el doble", "dos")
-
-
-def _fold(text: str) -> str:
-    import unicodedata
-
-    decomposed = unicodedata.normalize("NFKD", (text or "").lower())
-    plain = "".join(char for char in decomposed if not unicodedata.combining(char))
-    return " ".join(plain.split())
 
 
 def _tasks_from(text: str, materials: Materials) -> list[str]:
@@ -37,7 +27,7 @@ def _tasks_from(text: str, materials: Materials) -> list[str]:
     found: list[str] = []
     for code, task in {**{c: t for tasks in materials.standard.values() for c, t in tasks.items()},
                        **materials.nonstandard}.items():
-        name = _fold(task.name)
+        name = normalize_text(task.name)
         if name and name in text and code not in found:
             found.append(code)
     return found
@@ -58,7 +48,7 @@ def _parts_from(text: str, materials: Materials) -> list[dict]:
     """Parts said in the closure, by code or by the (possibly truncated) catalogue name."""
     used: dict[str, float] = {}
     for code, part in materials.parts.items():
-        name = _fold(part.name.split(" (")[0])
+        name = normalize_text(part.name.split(" (")[0])
         position = text.find(name) if name else -1
         by_code = text.find(code.lower())
         if position < 0 and by_code < 0:
@@ -79,7 +69,7 @@ def _hours_from(text: str) -> float | None:
 
 def _proof_from(text: str) -> str:
     for sentence in re.split(r"(?<=[.;])\s+", text):
-        folded = _fold(sentence)
+        folded = normalize_text(sentence)
         if any(word in folded for word in ("probe", "medi", "quedo en servicio", "sin perdida")):
             return sentence.strip().rstrip(".")
     return ""
@@ -88,7 +78,7 @@ def _proof_from(text: str) -> str:
 def parse_closure(text: str, *, orden_id: str, tecnico: str = "", empresa: str = "",
                   materials: Materials) -> ClosurePart:
     """Read the technician's closure note. Unknown wording simply produces fewer facts."""
-    folded = _fold(text)
+    folded = normalize_text(text)
     return ClosurePart(
         orden_id=orden_id,
         tecnico=tecnico,
@@ -110,7 +100,7 @@ def _quantities(parts: list[dict]) -> dict[str, float]:
     for part in parts:
         code = _part_key(part)
         if code:
-            quantities[code] = quantities.get(code, 0.0) + float(part.get("cantidad") or 1)
+            quantities[code] = quantities.get(code, 0.0) + float(part.get("cantidad") or DEFAULT_PART_QUANTITY)
     return quantities
 
 

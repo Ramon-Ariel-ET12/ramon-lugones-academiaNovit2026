@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -10,6 +11,29 @@ from app.domain.plant import load_snapshot_file
 
 ROOT = Path(__file__).resolve().parent.parent
 TZ = timezone(timedelta(hours=-3))
+
+
+def plant_root() -> Path:
+    """The plant repository (provided data), or a skip when it is not available.
+
+    CI clones it and exports ``PLANTA_REPO_DIR``; a bare checkout has it next to this
+    repository. Tests that need its fixtures must not fail without it.
+    """
+    base = Path(os.environ.get("PLANTA_REPO_DIR") or (ROOT / "academia2026-tp"))
+    if not base.is_dir():
+        pytest.skip("plant repository not available (set PLANTA_REPO_DIR)")
+    return base
+
+
+@pytest.fixture(scope="session")
+def plant_dir() -> Path:
+    return plant_root()
+
+
+@pytest.fixture(scope="session")
+def corpus_path(plant_dir) -> Path:
+    """The course corpus (fragmentos.jsonl) from the plant repository."""
+    return plant_dir / "datos" / "documentos" / "fragmentos.jsonl"
 
 
 @pytest.fixture(scope="session")

@@ -18,7 +18,6 @@ CONTRACT_DOC = "CT-SVP-2025"
 # Task code -> contract item (Anexo II). Anything else has no closed price.
 ITEM_OF_TASK = {"T-B-ROD": "SVP-01", "T-B-ALI": "SVP-02", "I-VIB": "SVP-03"}
 HOUR_ITEMS = {"SVP-04", "SVP-05"}
-MOBILISATION_ITEM = "SVP-06"
 EMERGENCY_ITEM = "SVP-07"
 
 # The same table appears as a markdown row ("| SVP-01 | … |") in the contract file and as

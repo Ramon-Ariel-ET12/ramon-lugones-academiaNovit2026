@@ -38,6 +38,14 @@ services:
       MAX_ATTEMPTS: ${MAX_ATTEMPTS:-6}
       MAX_NOTE_STEPS: ${MAX_NOTE_STEPS:-8}
       TOKEN_BUDGET: ${TOKEN_BUDGET:-8000}
+      # Vision (Entrega 2): the photos are analysed in the NVIDIA cloud through the link
+      # proxy. Leaving the key empty keeps the analysis queued; the safety alert never
+      # depends on it.
+      VISION_ENABLED: ${VISION_ENABLED:-false}
+      VISION_MODEL: ${VISION_MODEL:-meta/llama-3.2-11b-vision-instruct}
+      VISION_BASE_URL: ${VISION_BASE_URL:-https://integrate.api.nvidia.com/v1}
+      NVIDIA_API_KEY: ${NVIDIA_API_KEY:-}
+      VISION_TIMEOUT_S: ${VISION_TIMEOUT_S:-45}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
     volumes:
       - assistant-media:/data/media

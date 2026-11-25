@@ -122,3 +122,54 @@ def test_the_course_evaluator_agrees_with_the_local_copy():
     theirs = oficial(hybrid.citations, suite)
     for metric in ("hit@1", "hit@5", "recall@5", "mrr"):
         assert abs(ours["total"][metric] - theirs["total"][metric]) <= 0.002
+
+
+async def test_the_event_context_asks_for_the_whole_history_and_bounds_it(snapshot):
+    """The five recurring cases need the other pumps and both filters, not one team's last five."""
+    from app.rag.context import ORDER_HISTORY_LIMIT, build_event_context
+
+    class Plant:
+        def __init__(self):
+            self.calls: list[str | None] = []
+
+        async def order_history(self, equipment=None):
+            self.calls.append(equipment)
+            return [{"id": f"OT-{index}", "equipo": "B-101", "tareas": [],
+                     "fecha_aviso": "2026-01-01T08:00:00-03:00"} for index in range(300)]
+
+        async def state(self):
+            raise RuntimeError("no plant state in this test")
+
+        async def historian(self, *args, **kwargs):
+            return []
+
+    plant = Plant()
+    context = await build_event_context({"id": "E1", "equipo": "B-101"}, [], [], plant, None, snapshot, None)
+    assert plant.calls == [None], "the query must not be filtered by equipment"
+    assert len(context["order_history"]) == ORDER_HISTORY_LIMIT == 250
+    ids = [order["id"] for order in context["order_history"]]
+    assert "OT-0" not in ids and "OT-299" in ids
+
+
+async def test_the_stored_event_context_does_not_carry_the_history(snapshot):
+    from app.rag.context import build_event_context
+
+    class Plant:
+        def __init__(self):
+            self.calls = 0
+
+        async def order_history(self, equipment=None):
+            self.calls += 1
+            return [{"id": "OT-1", "equipo": "B-101"}]
+
+        async def state(self):
+            raise RuntimeError
+
+        async def historian(self, *args, **kwargs):
+            return []
+
+    plant = Plant()
+    context = await build_event_context({"id": "E1", "equipo": "B-101"}, [], [], plant, None, snapshot, None,
+                                        include_history=False)
+    assert context["order_history"] == []
+    assert plant.calls == 0

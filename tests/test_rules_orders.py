@@ -135,3 +135,35 @@ def test_the_crankshaft_bearing_kit_has_no_stock_in_the_yacimiento(materials):
     decision = evaluate(proposal, materials, state())
     assert not decision.approved
     assert any("contratista" in reason for reason in decision.reasons)
+
+
+def test_a_part_with_stock_only_in_central_leaves_the_order_pending(materials):
+    """Rule 3: the yacimiento warehouse decides; the central one (3 to 5 days) does not approve."""
+    proposal = build_proposal("F-201B", ["T-F-CAR"], materials, state())
+    assert proposal.parts == [{"codigo": "FC-CART-10", "cantidad": 48.0}]
+    assert materials.in_stock("FC-CART-10", 48.0, "central") is True
+    assert materials.in_stock("FC-CART-10", 48.0, "yacimiento") is False
+    decision = evaluate(proposal, materials, state())
+    assert decision.state == "PendienteAprobacion"
+    assert decision.reasons == ["sin stock de FC-CART-10 en el almacén del yacimiento"]
+    assert decision.motive == decision.reasons[0]
+
+
+def test_the_annex_bearing_kit_is_pending_and_the_motive_names_the_stock(materials, ts):
+    """TX-ROD-CIG is the Anexo case: 0 in the yacimiento, 2 in the central warehouse.
+
+    datos/materiales.yaml does not attach spare parts to T-B-ROD, so the kit the Anexo
+    associates with that task is added to the proposal by hand (which is what the real
+    order does).
+    """
+    proposal = build_proposal("B-101", ["T-B-ROD"], materials, state())
+    assert proposal.parts == []  # the catalogue does not hang parts off T-B-ROD
+    proposal.parts = [{"codigo": "TX-ROD-CIG", "cantidad": 1.0}]
+    assert materials.in_stock("TX-ROD-CIG", 1.0, "central") is True
+    decision = evaluate(proposal, materials, state())
+    assert decision.state == "PendienteAprobacion"
+    assert any("sin stock de TX-ROD-CIG en el almacén del yacimiento" in reason
+               for reason in decision.reasons), decision.reasons
+    payload = order_payload("oid", ts, decision.state, proposal, decision, ["e1"])
+    assert payload["motivo"] == decision.motive
+    assert "TX-ROD-CIG" in payload["motivo"]

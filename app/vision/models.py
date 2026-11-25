@@ -33,6 +33,11 @@ class PhotoVerdict(StrictModel):
     severity: Literal["ninguna", "leve", "grave"] = "ninguna"
     observations: list[str] = Field(default_factory=list)
     model: str = ""
+    # What the model call cost in tokens and time. The accounting never changes the
+    # verdict, but the INFORME and the usage log need the numbers per photo.
+    input_tokens: int = 0
+    output_tokens: int = 0
+    latency_ms: int = 0
     # True when the photo could not be analysed (link down, no model, unreadable file):
     # the pipeline must never read "no damage" out of a failed analysis.
     deferred: bool = False
